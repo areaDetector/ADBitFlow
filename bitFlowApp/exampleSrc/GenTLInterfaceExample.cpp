@@ -1023,7 +1023,7 @@ void eventThreadFunc (bool *const a_keepRunning, GenTL_CTI *const cti, EVENT_TYP
                             "Message Namespace: " << msgNamespace << "\n"
                             "Event ID: " << msgEventID << "\n";
 
-                        sprintf_s(tmpStr, "Timestamp: 0x%08x'%08x\n", std::uint32_t(msgTimestamp >> 32), std::uint32_t(msgTimestamp & 0xffffffff));
+                        sprintf(tmpStr, "Timestamp: 0x%08x'%08x\n", std::uint32_t(msgTimestamp >> 32), std::uint32_t(msgTimestamp & 0xffffffff));
                         *a_fileOut << tmpStr;
 
                         *a_fileOut << "Data\n";
@@ -1032,7 +1032,7 @@ void eventThreadFunc (bool *const a_keepRunning, GenTL_CTI *const cti, EVENT_TYP
                         std::uint8_t *pBytes = (std::uint8_t*)&msgData[3];
                         for (std::uint32_t byteNum = 0; byteNum < dataSize; ++byteNum, ++pBytes)
                         {
-                            sprintf_s(tmpStr, "%d 0x%02x\n", byteNum, *pBytes);
+                            sprintf(tmpStr, "%d 0x%02x\n", byteNum, *pBytes);
                             *a_fileOut << tmpStr;
                         }
                     }
