@@ -1,0 +1,3 @@
+medm -x -macro "P=13BF1:, R=cam1:" ADBitFlow.adl &
+../../bin/linux-x86_64/bitFlowApp st.cmd.Microtron_MC2066
+
