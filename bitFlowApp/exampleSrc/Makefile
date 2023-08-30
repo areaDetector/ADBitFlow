@@ -5,15 +5,29 @@ include $(TOP)/configure/CONFIG
 
 STATIC_BUILD = NO
 
-PROD_IOC_Linux += GenTLInterfaceExample
-PROD_IOC_WIN32 += GenTLInterfaceExample
-GenTLInterfaceExample_SRCS += GenTLInterfaceExample.cpp GenTLView.cpp
+#PROD_IOC_Linux += GenTLInterfaceExample
+#PROD_IOC_WIN32 += GenTLInterfaceExample
+#GenTLInterfaceExample_SRCS += GenTLInterfaceExample.cpp GenTLView.cpp
+#GenTLInterfaceExample_SRCS += GenTLInterfaceExample.cpp
+PROD_IOC_Linux      += CIsimple
+CIsimple_SRCS_Linux += CIsimple_Linux.c
+PROD_IOC_WIN32      += CiSimple
+CiSimple_SRCS_WIN32 += CiSimple_Windows.c
 
-#PROD_LIBS_WIN32 += Spinnaker_v140
+PROD_IOC_WIN32      += test_features
+test_features_SRCS  += test_features.c
 
-PROD_LIBS_Linux += GenTLInterface
-PROD_LIBS_Linux += GCBase_gcc48_v3_3
-PROD_LIBS_Linux += GenApi_gcc48_v3_3
+#PROD_LIBS_Linux += GenTLInterface
+#PROD_LIBS_Linux += GCBase_gcc48_v3_3
+#PROD_LIBS_Linux += GenApi_gcc48_v3_3
+PROD_LIBS_Linux += BFSOciLib.9.08
+
+PROD_LIBS_WIN32 += BFGTLUtil
+PROD_LIBS_WIN32 += BFEr
+PROD_LIBS_WIN32 += BFD
+PROD_LIBS_WIN32 += DispSurf
+PROD_LIBS_WIN32 += Cid
+PROD_SYS_LIBS_WIN32 += User32
 
 #=============================
 
