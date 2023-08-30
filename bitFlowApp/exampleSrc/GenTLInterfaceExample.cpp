@@ -507,8 +507,9 @@ void execNodeConsole (GenTL_CTI *const cti, const TL_HANDLE hTL)
                     std::cerr << "\nUnable to run gtlacq without a device. Please run setdev, first.\n";
                 else
                 {
-                    execGenTLAcq(cti, hDev, remDevNodeMap);
-                    std::cout << "\ngtlacq has returned. Resuming the node console.\n\n";
+                    //execGenTLAcq(cti, hDev, remDevNodeMap);
+                    //std::cout << "\ngtlacq has returned. Resuming the node console.\n\n";
+                    std::cout << "\ngtlacq not yet implemented.\n\n";
                 }
             }
             else if (cmd == "gtlacq_adv")
@@ -517,8 +518,9 @@ void execNodeConsole (GenTL_CTI *const cti, const TL_HANDLE hTL)
                     std::cerr << "\nUnable to run gtlacq_adv without a device. Please run setdev, first.\n";
                 else
                 {
-                    execGenTLAcqAdv(cti, hDev, remDevNodeMap);
-                    std::cout << "\ngtlacq_adv has returned. Resuming the node console.\n\n";
+                    //execGenTLAcqAdv(cti, hDev, remDevNodeMap);
+                    //std::cout << "\ngtlacq_adv has returned. Resuming the node console.\n\n";
+                    std::cout << "\ngtlacq_adv not yet implemented.\n\n";
                 }
             }
             else if (cmd == "gtlview")
@@ -527,8 +529,9 @@ void execNodeConsole (GenTL_CTI *const cti, const TL_HANDLE hTL)
                     std::cerr << "\nUnable to run gtlview without a device. Please run setdev, first.\n";
                 else
                 {
-                    execGenTLView(cti, hDev, remDevNodeMap);
-                    std::cout << "\ngtlview has returned. Resuming the node console.\n\n";
+                    //execGenTLView(cti, hDev, remDevNodeMap);
+                    //std::cout << "\ngtlview has returned. Resuming the node console.\n\n";
+                    std::cout << "\ngtlview not yet implements.\n\n";
                 }
             }
             else if (cmd == "gtlview_adv")
@@ -537,8 +540,9 @@ void execNodeConsole (GenTL_CTI *const cti, const TL_HANDLE hTL)
                     std::cerr << "\nUnable to run gtlview_adv without a device. Please run setdev, first.\n";
                 else
                 {
-                    execGenTLViewAdv(cti, hDev, remDevNodeMap);
-                    std::cout << "\ngtlview_adv has returned. Resuming the node console.\n\n";
+                    //execGenTLViewAdv(cti, hDev, remDevNodeMap);
+                    //std::cout << "\ngtlview_adv has returned. Resuming the node console.\n\n";
+                    std::cout << "\ngtlview_adv not yet implements.\n\n";
                 }
             }
             else if (cmd == "evtview")
