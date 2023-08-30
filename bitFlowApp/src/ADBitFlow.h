@@ -4,8 +4,12 @@
 #include <epicsEvent.h>
 
 #include <ADGenICam.h>
-#include "BFciLib.h"
-
+#ifdef _WIN32
+  #include "CircularInterface.h"
+  using namespace BufferAcquisition;
+#else
+  #include "BFciLib.h"
+#endif
 
 #define SPConvertPixelFormatString          "SP_CONVERT_PIXEL_FORMAT"           // asynParamInt32, R/W
 #define SPStartedFrameCountString           "SP_STARTED_FRAME_COUNT"            // asynParamInt32, R/O
@@ -43,6 +47,7 @@ public:
                                           std::string const & asynName, asynParamType asynType, int asynIndex,
                                           std::string const & featureName, GCFeatureType_t featureType);
     
+    BFGTLDev getBFGTLDev();
     /**< These should be private but are called from C callback functions, must be public. */
     void imageGrabTask();
     void shutdown();
@@ -75,10 +80,15 @@ private:
     void reportNode(FILE *fp, const char *nodeName, int level);
 
     /* Data */
-    int cameraId_;
-    
-    int numSPBuffers_;
-
+    int boardId_;
+    #ifdef _WIN32
+      Bd hBoard_;
+      CircularInterface *pBoard_;
+    #else
+      tCIp hBoard_;
+    #endif
+    BFGTLDev hDevice_;
+    int numBFBuffers_;
     int exiting_;
     epicsEventId startEventId_;
     epicsMessageQueue *pCallbackMsgQ_;
