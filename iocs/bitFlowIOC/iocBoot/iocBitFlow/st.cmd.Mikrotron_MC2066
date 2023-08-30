@@ -5,8 +5,7 @@ dbLoadDatabase("$(TOP)/dbd/bitFlowApp.dbd")
 bitFlowApp_registerRecordDeviceDriver(pdbbase) 
 
 # Use this line for a specific board
-epicsEnvSet("BOARD_ID", "CXX")
-#epicsEnvSet("CAMERA_ID", "0")
+epicsEnvSet("BOARD_ID", "0")
 
 epicsEnvSet("GENICAM_DB_FILE", "$(ADGENICAM)/db/Mikrotron_CXP_MC206xS11.template")
 
