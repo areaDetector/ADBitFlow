@@ -40,7 +40,8 @@ private:
     asynUser *mAsynUser;
     BFGTLDev mDev;
     BFGTLNode mNode;
-    const char* mNodeName;
+    BFGTLNodeType mNodeType;
+    std::string mNodeName;
     bool mIsImplemented;
 
 };
