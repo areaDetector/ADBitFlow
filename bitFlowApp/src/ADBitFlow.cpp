@@ -1,12 +1,12 @@
 /*
  * ADBitFlow.cpp
  *
- * This is a driver for FLIR (PointGrey) GigE, 10GigE, and USB3 cameras using their Spinnaker SDK
+ * This is a driver for BitFlow frame grabbers
  *
  * Author: Mark Rivers
  *         University of Chicago
  *
- * Created: February 3, 2018
+ * Created: August 28, 2023
  *
  */
 
@@ -26,22 +26,30 @@
 #include <epicsString.h>
 #include <epicsExit.h>
 
-#include "Spinnaker.h"
-#include "SpinGenApi/SpinnakerGenApi.h"
+#ifdef _WIN32
+#include  "CircularInterface.h"
+#include  "CiApi.h"
+#include  "BiApi.h"
+#include	"BFApi.h"
+#include	"BFErApi.h"
+#include	"DSApi.h"
+#include	"BFGTLUtilApi.h"
 
-using namespace Spinnaker;
-using namespace Spinnaker::GenApi;
-using namespace Spinnaker::GenICam;
+#else
+#include	"BFciLib.h"
+#endif
+
 using namespace std;
+using namespace BufferAcquisition;
 
 #include <ADGenICam.h>
 
 #include <epicsExport.h>
-#include "SPFeature.h"
+#include "BFFeature.h"
 #include "ADBitFlow.h"
 
-#define DRIVER_VERSION      3
-#define DRIVER_REVISION     4
+#define DRIVER_VERSION      1
+#define DRIVER_REVISION     0
 #define DRIVER_MODIFICATION 0
 
 static const char *driverName = "ADBitFlow";
@@ -49,42 +57,22 @@ static const char *driverName = "ADBitFlow";
 // Size of message queue for callback function
 #define CALLBACK_MESSAGE_QUEUE_SIZE 100
 
-typedef enum {
-    SPPixelConvertNone,
-    SPPixelConvertMono8,
-    SPPixelConvertMono16,
-    SPPixelConvertRaw16,
-    SPPixelConvertRGB8,
-    SPPixelConvertRGB16
-} SPPixelConvert_t;
-
-typedef enum {
-    TimeStampCamera,
-    TimeStampEPICS
-} SPTimeStamp_t;
-
-typedef enum {
-    UniqueIdCamera,
-    UniqueIdDriver
-} SPUniqueId_t;
-
-
 /** Configuration function to configure one camera.
  *
  * This function need to be called once for each camera to be used by the IOC. A call to this
  * function instantiates one object from the ADBitFlow class.
  * \param[in] portName asyn port name to assign to the camera.
- * \param[in] cameraId The camera index or serial number; <1000 is assumed to be index, >=1000 is assumed to be serial number.
- * \param[in] numSPBuffers The number of TransportLayer buffers to allocate in Spinnaker.
+ * \param[in] boardId The board number.  Default is 0.
+ * \param[in] numBFBuffers The number of buffers to allocate in BitFlow driver.
  *            If set to 0 or omitted the default of 100 will be used.
  * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
  * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
  * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
  */
-extern "C" int ADBitFlowConfig(const char *portName, int cameraId, int numSPBuffers,
-                                 size_t maxMemory, int priority, int stackSize)
+extern "C" int ADBitFlowConfig(const char *portName, int boardId, int numBFBuffers,
+                               size_t maxMemory, int priority, int stackSize)
 {
-    new ADBitFlow( portName, cameraId, numSPBuffers, maxMemory, priority, stackSize);
+    new ADBitFlow( portName, boardId, numBFBuffers, maxMemory, priority, stackSize);
     return asynSuccess;
 }
 
@@ -96,37 +84,27 @@ static void c_shutdown(void *arg)
 }
 
 
-static void imageGrabTaskC(void *drvPvt)
-{
-    ADBitFlow *pPvt = (ADBitFlow *)drvPvt;
-
-    pPvt->imageGrabTask();
-}
-
 /** Constructor for the ADBitFlow class
  * \param[in] portName asyn port name to assign to the camera.
- * \param[in] cameraId The camera index or serial number; <1000 is assumed to be index, >=1000 is assumed to be serial number.
- * \param[in] numSPBuffers The number of TransportLayer buffers to allocate in Spinnaker.
+ * \param[in] boardId The board number.  Default is 0.
+ * \param[in] numBFBuffers The number of buffers to allocate in BitFlow driver.
  *            If set to 0 or omitted the default of 100 will be used.
  * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
  * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
  * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
  */
-ADBitFlow::ADBitFlow(const char *portName, int cameraId, int numSPBuffers,
+ADBitFlow::ADBitFlow(const char *portName, int boardId, int numBFBuffers,
                          size_t maxMemory, int priority, int stackSize )
     : ADGenICam(portName, maxMemory, priority, stackSize),
-    cameraId_(cameraId), numSPBuffers_(numSPBuffers), exiting_(0), pRaw_(NULL), uniqueId_(0)
+    boardId_(boardId), pBoard_(0), hBoard_(0), hDevice_(0), numBFBuffers_(numBFBuffers), exiting_(0), pRaw_(NULL), uniqueId_(0)
 {
     static const char *functionName = "ADBitFlow";
     asynStatus status;
     
     //pasynTrace->setTraceMask(pasynUserSelf, ASYN_TRACE_ERROR | ASYN_TRACE_WARNING | ASYN_TRACEIO_DRIVER);
     
-    if (numSPBuffers_ == 0) numSPBuffers_ = 100;
-    if (numSPBuffers_ < 10) numSPBuffers_ = 10;
-
-    // Retrieve singleton reference to system object
-    system_ = System::GetInstance();
+    if (numBFBuffers_ == 0) numBFBuffers_ = 100;
+    if (numBFBuffers_ < 10) numBFBuffers_ = 10;
 
     status = connectCamera();
     if (status) {
@@ -138,6 +116,7 @@ ADBitFlow::ADBitFlow(const char *portName, int cameraId, int numSPBuffers,
         return;
     }
 
+/*
     createParam(SPConvertPixelFormatString,         asynParamInt32,   &SPConvertPixelFormat);
     createParam(SPStartedFrameCountString,          asynParamInt32,   &SPStartedFrameCount);
     createParam(SPDeliveredFrameCountString,        asynParamInt32,   &SPDeliveredFrameCount);
@@ -153,7 +132,7 @@ ADBitFlow::ADBitFlow(const char *portName, int cameraId, int numSPBuffers,
     createParam(SPResendReceivedPacketCountString,  asynParamInt32,   &SPResendReceivedPacketCount);
     createParam(SPTimeStampModeString,              asynParamInt32,   &SPTimeStampMode);
     createParam(SPUniqueIdModeString,               asynParamInt32,   &SPUniqueIdMode);
-
+*/
     /* Set initial values of some parameters */
     setIntegerParam(NDDataType, NDUInt8);
     setIntegerParam(NDColorMode, NDColorModeMono);
@@ -163,6 +142,7 @@ ADBitFlow::ADBitFlow(const char *portName, int cameraId, int numSPBuffers,
     setStringParam(ADStringToServer, "<not used by driver>");
     setStringParam(ADStringFromServer, "<not used by driver>");
 
+/*
     // Create the message queue to pass images from the callback class
     pCallbackMsgQ_ = new epicsMessageQueue(CALLBACK_MESSAGE_QUEUE_SIZE, sizeof(ImagePtr));
     if (!pCallbackMsgQ_) {
@@ -171,21 +151,25 @@ ADBitFlow::ADBitFlow(const char *portName, int cameraId, int numSPBuffers,
 
     //pImageEventHandler_ = new ADBitFlowImageEventHandler(pCallbackMsgQ_);
     //pCamera_->RegisterEventHandler(*pImageEventHandler_);
-
+*/
     startEventId_ = epicsEventCreate(epicsEventEmpty);
 
+/*
     // launch image read task
     epicsThreadCreate("ADBitFlowImageTask", 
                       epicsThreadPriorityMedium,
                       epicsThreadGetStackSize(epicsThreadStackMedium),
                       imageGrabTaskC, this);
-
+*/
     // shutdown on exit
     epicsAtExit(c_shutdown, this);
 
     return;
 }
 
+BFGTLDev ADBitFlow::getBFGTLDev() {
+    return hDevice_;
+}
 
 void ADBitFlow::shutdown(void)
 {
@@ -204,101 +188,72 @@ GenICamFeature *ADBitFlow::createFeature(GenICamFeatureSet *set,
 
 asynStatus ADBitFlow::connectCamera(void)
 {
-    unsigned int numCameras;
-    char tempString[100];
+    char SDKVersionString[256];
+    char driverVersionString[256];
     static const char *functionName = "connectCamera";
 
-    try {
-        // Retrieve list of cameras from the system
-        camList_ = system_->GetCameras();
+#ifdef _WIN32
+    // Open the board using default camera file
+    BFU32 cirSetupOptions = 0;
+    BFU32 errorMode = CirErStop;
+    pBoard_ = new CircularInterface(boardId_, numBFBuffers_, errorMode, cirSetupOptions);
+    if (!pBoard_) {
+        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
+            "%s::%s error calling BiBrdOpen, could not open board.\n",
+            driverName, functionName);
+        return asynError;
+    }
+    hBoard_ = pBoard_->getBoardHandle();
     
-        numCameras = camList_.GetSize();
-    
-        asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
-            "%s::%s called camList_.GetSize, camList_=%p, numCameras=%d\n",
-            driverName, functionName, &camList_, numCameras);
-        
-        if (numCameras <= 0) {
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-                "%s:%s: no cameras found\n",
+    char modelStr[MAX_STRING];
+    char familyStr[MAX_STRING];
+    char camName[MAX_STRING];
+    unsigned int familyIndex;
+    unsigned int ciFamily;
+    BFGetBoardStrings(hBoard_, modelStr, MAX_STRING, familyStr, MAX_STRING, &familyIndex, &ciFamily);
+    printf("Board \"%s - %s\" has been opened.\n", familyStr, modelStr);
+    printf("Attached camera list:\n");
+    int i = 0;
+    while (CiBrdCamGetFileName(hBoard_, i, camName, sizeof(camName)) == CI_OK) {
+        printf("%d - %s\n", i, camName);
+        i++;
+    }
+    printf("Board is acquiring from camera\n");
+    int ready;
+    CiConIsCameraReady(hBoard_, &ready);
+    if (ready)
+        printf("System reports camera is ready\n");
+    else
+        printf("System reports camera not ready\n");
+
+    if (BFIsCXP(hBoard_)) {
+        // BFGTLUtil open device
+        if (BFGTLDevOpen(hBoard_, &hDevice_) != BF_OK) {
+            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                "%s::%s calling BFGTLDevOpen\n",
                 driverName, functionName);
-     
-            // Clear camera list before releasing system
-            camList_.Clear();
-            return asynError;
-        }
-    
-        if (cameraId_ < 1000) {
-            asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
-                "%s::%s calling camList_.GetByIndex, camList_=%p\n",
-                driverName, functionName, &camList_);
-            pCamera_ = camList_.GetByIndex(cameraId_);
-        } else { 
-            asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
-                "%s::%s calling camList_.GetBySerial, camList_=%p, cameraId_=%d\n",
-                driverName, functionName, &camList_, cameraId_);
-            char tempString[100];
-            sprintf(tempString, "%d", cameraId_);
-            std::string tempStdString(tempString);
-            pCamera_ = camList_.GetBySerial(tempStdString);
-        }
-    
-        // Initialize camera
-        pCamera_->Init();
-        
-        // Retrieve GenICam nodemap
-        pNodeMap_ = &pCamera_->GetNodeMap();
+         }
+         printf("%s::%s hBoard_=%p, hDevice_=%p\n", driverName, functionName, hBoard_, hDevice_);
+     }
+    unsigned int versionMajor, versionMinor;
+    BiDVersion(&versionMajor, &versionMinor);
+    epicsSnprintf(SDKVersionString, sizeof(SDKVersionString), "%d.%d", versionMajor, versionMinor);
 
-        // Retrieve TLStream nodemap
-        pTLStreamNodeMap_ = &pCamera_->GetTLStreamNodeMap();
-
-        // Retrieve Buffer Handling Mode Information
-        CEnumerationPtr ptrHandlingMode = pTLStreamNodeMap_->GetNode("StreamBufferHandlingMode");
-        CEnumEntryPtr ptrHandlingModeEntry = ptrHandlingMode->GetCurrentEntry();
-        // Set stream buffer Count Mode to manual
-        CEnumerationPtr ptrStreamBufferCountMode = pTLStreamNodeMap_->GetNode("StreamBufferCountMode");
-        CEnumEntryPtr ptrStreamBufferCountModeManual = ptrStreamBufferCountMode->GetEntryByName("Manual");
-        // Retrieve and modify Stream Buffer Count
-        CIntegerPtr ptrBufferCount = pTLStreamNodeMap_->GetNode("StreamBufferCountManual");
-        ptrStreamBufferCountMode->SetIntValue(ptrStreamBufferCountModeManual->GetValue());
-        ptrBufferCount->SetValue(numSPBuffers_);
+#else
+    tCIRC circ;
+    if (circ = CiVFGopen(0, kCIBO_writeAccess, &hBoard_)) {
+        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
+            "%s::%s error calling CiVFGopen, error=%s.\n",
+            driverName, functionName, CiErrStr(circ));
+        return asynError;
     }
-
-    catch (Spinnaker::Exception &e) {
-      asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-          "%s::%s exception %s\n",
-          driverName, functionName, e.what());
-      return asynError;
-    }
-
-    epicsSnprintf(tempString, sizeof(tempString), "%d.%d.%d", 
+#endif
+    epicsSnprintf(driverVersionString, sizeof(driverVersionString), "%d.%d.%d", 
                   DRIVER_VERSION, DRIVER_REVISION, DRIVER_MODIFICATION);
-    setStringParam(NDDriverVersion,tempString);
+    setStringParam(NDDriverVersion,driverVersionString);
  
-    
-    LibraryVersion version = system_->GetLibraryVersion();
-    epicsSnprintf(tempString, sizeof(tempString), "%d.%d.%d.%d", version.major, version.minor, version.type, version.build);
-    asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
-        "%s::%s called System::GetLibraryVersion, version=%s\n",
-        driverName, functionName, tempString);
-    setStringParam(ADSDKVersion, tempString);
+    setStringParam(ADSDKVersion, SDKVersionString);
 
-/*
-    // Get and set the embedded image info
-    asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
-        "%s::%s calling CameraBase::GetEmbeddedImageInfo, &embeddedInfo=%p\n",
-        driverName, functionName, &embeddedInfo);
-    error = pCameraBase_->GetEmbeddedImageInfo(&embeddedInfo);
-    if (checkError(error, functionName, "GetEmbeddedImageInfo")) return asynError;
-    // Force the timestamp and frame counter information to be on
-    embeddedInfo.timestamp.onOff = true;
-    embeddedInfo.frameCounter.onOff = true;
-    asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
-        "%s::%s calling CameraBase::SetEmbeddedImageInfo, &embeddedInfo=%p\n",
-        driverName, functionName, &embeddedInfo);
-    error = pCameraBase_->SetEmbeddedImageInfo(&embeddedInfo);
-    if (checkError(error, functionName, "SetEmbeddedImageInfo")) return asynError;
-*/    
     return asynSuccess;
 }
 
@@ -389,6 +344,7 @@ void ADBitFlow::imageGrabTask()
             setIntegerParam(ADStatus, ADStatusIdle);
             status = stopCapture();
         }
+/*
         try {
             const TransportLayerStream& streamStats = pCamera_->TLStream;
             pTLStreamNodeMap_->InvalidateNodes();
@@ -410,6 +366,7 @@ void ADBitFlow::imageGrabTask()
                 "%s::%s exception %s\n",
                 driverName, functionName, e.what());
         }
+*/
         callParamCallbacks();
     }
 }
@@ -426,16 +383,14 @@ asynStatus ADBitFlow::grabImage()
     bool imageConverted = false;
     int numColors;
     size_t dims[3];
-    ImageStatus imageStatus;
-    PixelFormatEnums pixelFormat;
     int pixelSize;
     size_t dataSize, dataSizePG;
     void *pData;
     int nDims;
-    ImagePtr pImage;
-    ImagePtr *imagePtrAddr=0;
     static const char *functionName = "grabImage";
 
+    asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
+/*
     try {
         unlock();
         int recvSize = pCallbackMsgQ_->receive(&imagePtrAddr, sizeof(imagePtrAddr));
@@ -672,6 +627,8 @@ asynStatus ADBitFlow::grabImage()
             driverName, functionName, e.what());
         return asynError;
     }
+*/
+    return asynSuccess;
 }
 
 asynStatus ADBitFlow::readEnum(asynUser *pasynUser, char *strings[], int values[], int severities[], 
@@ -688,10 +645,13 @@ asynStatus ADBitFlow::readEnum(asynUser *pasynUser, char *strings[], int values[
     return ADGenICam::readEnum(pasynUser, strings, values, severities, nElements, nIn);
 }
 
+
 asynStatus ADBitFlow::startCapture()
 {
     static const char *functionName = "startCapture";
-
+    
+    asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
+/*
     // Start the camera transmission...
     setIntegerParam(ADNumImagesCounter, 0);
     setShutter(1);
@@ -705,16 +665,17 @@ asynStatus ADBitFlow::startCapture()
           driverName, functionName, e.what());
       return asynError;
     }
+*/
     return asynSuccess;
 }
-
 
 asynStatus ADBitFlow::stopCapture()
 {
     int status;
     static const char *functionName = "stopCapture";
-    ImagePtr *dummy = NULL;
 
+    asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
+/*
     try {
         pCamera_->EndAcquisition();
     }
@@ -749,9 +710,11 @@ asynStatus ADBitFlow::stopCapture()
 
     // Need to empty the message queue it could have some images in it
     while(pCallbackMsgQ_->tryReceive(&dummy, sizeof(dummy)) != -1) {}
+*/
     return asynSuccess;
 }
 
+/*
 void ADBitFlow::reportNode(FILE *fp, INodeMap *pNodeMap, gcstring nodeName, int level)
 {
     gcstring displayName;
@@ -798,7 +761,7 @@ void ADBitFlow::reportNode(FILE *fp, INodeMap *pNodeMap, gcstring nodeName, int 
     }
     fprintf(fp, "%s (%s):%s\n", displayName.c_str(), nodeName.c_str(), value.c_str());
 }
-
+*/
 
 /** Print out a report; calls ADGenICam::report to get base class report as well.
   * \param[in] fp File pointer to write output to
@@ -812,6 +775,7 @@ void ADBitFlow::report(FILE *fp, int details)
     int i;
     static const char *functionName = "report";
 
+/*
     try {    
         numCameras = camList_.GetSize();
         fprintf(fp, "\n");
@@ -835,7 +799,7 @@ void ADBitFlow::report(FILE *fp, int details)
           "%s::%s exception %s\n",
           driverName, functionName, e.what());
     }
-    
+*/    
     fprintf(fp, "\n");
     fprintf(fp, "Report for camera in use:\n");
     ADGenICam::report(fp, details);
@@ -843,8 +807,8 @@ void ADBitFlow::report(FILE *fp, int details)
 }
 
 static const iocshArg configArg0 = {"Port name", iocshArgString};
-static const iocshArg configArg1 = {"cameraId", iocshArgInt};
-static const iocshArg configArg2 = {"# Spinnaker buffers", iocshArgInt};
+static const iocshArg configArg1 = {"boardId", iocshArgInt};
+static const iocshArg configArg2 = {"# BitFlow buffers", iocshArgInt};
 static const iocshArg configArg3 = {"maxMemory", iocshArgInt};
 static const iocshArg configArg4 = {"priority", iocshArgInt};
 static const iocshArg configArg5 = {"stackSize", iocshArgInt};
