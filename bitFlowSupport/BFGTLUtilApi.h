@@ -41,8 +41,7 @@ BFGTLUTIL_IMPORT_EXPORT_ERR       BFGTLDevOpen            (BFGTLUtilBd hBoard, P
 
 // Advanced device open with improved performance. An accurate CISYS_TYPE_ANY board number
 // must be provided. Opens with the "default" XML file, if any.
-//      boardNumber -- Board number to be opened. On Linux systems, this is the V4L devNdx returned by
-//                     CiSysVFGinfo2 or CiVFGindex.
+//      boardNumber -- Board number to be opened.
 //      hBoard      -- Board to open the GenTL device of.
 //      options     -- Device open options. NULL opens with default options, equivalent to BFGTLDevOpen.
 //      hDev        -- [OUT] Return pointer of the opened device.
