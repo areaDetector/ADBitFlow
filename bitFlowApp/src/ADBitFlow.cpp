@@ -83,6 +83,12 @@ static void c_shutdown(void *arg)
    p->shutdown();
 }
 
+static void imageGrabTaskC(void *drvPvt)
+{
+    ADBitFlow *pPvt = (ADBitFlow *)drvPvt;
+
+    pPvt->imageGrabTask();
+}
 
 /** Constructor for the ADBitFlow class
  * \param[in] portName asyn port name to assign to the camera.
@@ -154,13 +160,11 @@ ADBitFlow::ADBitFlow(const char *portName, int boardId, int numBFBuffers,
 */
     startEventId_ = epicsEventCreate(epicsEventEmpty);
 
-/*
     // launch image read task
     epicsThreadCreate("ADBitFlowImageTask", 
                       epicsThreadPriorityMedium,
                       epicsThreadGetStackSize(epicsThreadStackMedium),
                       imageGrabTaskC, this);
-*/
     // shutdown on exit
     epicsAtExit(c_shutdown, this);
 
@@ -306,7 +310,10 @@ void ADBitFlow::imageGrabTask()
         // Call the callbacks to update any changes
         callParamCallbacks();
 
+        unlock();
         status = grabImage();
+        lock();
+/*
         if (status == asynError) {
             // remember to release the NDArray back to the pool now
             // that we are not using it (we didn't get an image...)
@@ -314,7 +321,7 @@ void ADBitFlow::imageGrabTask()
             pRaw_ = NULL;
             continue;
         }
-
+*/
         getIntegerParam(NDArrayCounter, &imageCounter);
         getIntegerParam(ADNumImages, &numImages);
         getIntegerParam(ADNumImagesCounter, &numImagesCounter);
@@ -325,6 +332,7 @@ void ADBitFlow::imageGrabTask()
         setIntegerParam(NDArrayCounter, imageCounter);
         setIntegerParam(ADNumImagesCounter, numImagesCounter);
 
+/*
         if (arrayCallbacks) {
             // Call the NDArray callback
             doCallbacksGenericPointer(pRaw_, NDArrayData, 0);
@@ -334,6 +342,7 @@ void ADBitFlow::imageGrabTask()
         pRaw_->release();
         pRaw_ = NULL;
 
+*/
         getIntegerParam(ADAcquire, &acquire);
         // See if acquisition is done if we are in single or multiple mode
         // The check for acquire=0 means this thread will call stopCapture and hence pCamera_->EndAcquisition().
@@ -387,24 +396,25 @@ asynStatus ADBitFlow::grabImage()
     size_t dataSize, dataSizePG;
     void *pData;
     int nDims;
+    BiCirHandle cirHandle;
     static const char *functionName = "grabImage";
-
-    asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
-/*
+    
     try {
-        unlock();
-        int recvSize = pCallbackMsgQ_->receive(&imagePtrAddr, sizeof(imagePtrAddr));
-        lock();
-        if (recvSize != sizeof(imagePtrAddr)) {
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
-                    "%s::%s error receiving from message queue\n",
-                    driverName, functionName);
-            return asynError;
+        //unlock();
+        int status = pBoard_->waitDoneFrame(INFINITE, &cirHandle);
+        switch (status) {
+          case BI_CIR_STOPPED:
+            printf("Circular acquisition stopped\n"); break;
+          case BI_CIR_ABORTED:
+            printf("Circular acquisition aborted\n"); break;
+          case BI_ERROR_CIR_WAIT_TIMEOUT:
+            printf("Circular wait timeout\n"); break;
+          case BI_ERROR_CIR_WAIT_FAILED:
+            printf("Circular wait failed\n"); break;
+          case BI_ERROR_QEMPTY:
+            printf("Circular queue was empty\n"); break;
         }
-        // We are sent a null pointer to flag acquisition complete so return
-        if (imagePtrAddr == NULL)  {
-            return asynError;
-        }
+/*        
         pImage = *imagePtrAddr;
         // Delete the ImagePtr that was passed to us
         delete imagePtrAddr;
@@ -620,14 +630,18 @@ asynStatus ADBitFlow::grabImage()
     
         pRaw_->pAttributeList->add("ColorMode", "Color mode", NDAttrInt32, &colorMode);
         return status;
+*/
+        // Mark the buffer as available
+        pBoard_->setBufferStatus(cirHandle, BIAVAILABLE);
     }
-    catch (Spinnaker::Exception &e) {
+
+    catch (BFException e) {
         asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
             "%s::%s exception %s\n",
-            driverName, functionName, e.what());
+            driverName, functionName, e.showErrorMsg());
         return asynError;
     }
-*/
+
     return asynSuccess;
 }
 
@@ -651,21 +665,9 @@ asynStatus ADBitFlow::startCapture()
     static const char *functionName = "startCapture";
     
     asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
-/*
-    // Start the camera transmission...
-    setIntegerParam(ADNumImagesCounter, 0);
-    setShutter(1);
-    try {
-        pCamera_->BeginAcquisition();
-        epicsEventSignal(startEventId_);
-    }
-    catch (Spinnaker::Exception &e) {
-      asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-          "%s::%s exception %s\n",
-          driverName, functionName, e.what());
-      return asynError;
-    }
-*/
+    
+    pBoard_->cirControl(BISTART, BiAsync);
+    epicsEventSignal(startEventId_);
     return asynSuccess;
 }
 
@@ -675,29 +677,12 @@ asynStatus ADBitFlow::stopCapture()
     static const char *functionName = "stopCapture";
 
     asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
-/*
-    try {
-        pCamera_->EndAcquisition();
-    }
-    catch (Spinnaker::Exception &e) {
-        // Ignore errors that camera not started (-1002)
-        if (e.GetError() != SPINNAKER_ERR_NOT_INITIALIZED) {
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-                "%s::%s exception %s\n",
-                driverName, functionName, e.what());
-        }
-    }
+    
+    pBoard_->cirControl(BISTOP, BiAsync);
 
     // Set ADAcquire=0 which will tell the imageGrabTask to stop
     setIntegerParam(ADAcquire, 0);
     setShutter(0);
-
-    // Send a null image poiner to grabImage to make it exit if it is waiting for an image
-    if (pCallbackMsgQ_->send(&dummy, sizeof(dummy)) != 0) {
-        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-            "%s::%s error calling pCallbackMsgQ_->send()\n",
-            driverName, functionName);
-    }
 
     // Need to wait for the imageGrabTask to set the status to idle
     while (1) {
@@ -708,9 +693,6 @@ asynStatus ADBitFlow::stopCapture()
         lock();
     }
 
-    // Need to empty the message queue it could have some images in it
-    while(pCallbackMsgQ_->tryReceive(&dummy, sizeof(dummy)) != -1) {}
-*/
     return asynSuccess;
 }
 
