@@ -24,7 +24,7 @@ epicsEnvSet("NELEMENTS", "2073600")
 
 # ADBitFlowConfig(const char *portName, const char *boardId, int numBFBuffers,
 #                 size_t maxMemory, int priority, int stackSize)
-ADBitFlowConfig("$(PORT)", $(BOARD_ID))
+ADBitFlowConfig("$(PORT)", $(BOARD_ID), 200)
 asynSetTraceIOMask($(PORT), 0, 2)
 # Set ASYN_TRACE_WARNING and ASYN_TRACE_ERROR
 #asynSetTraceMask($(PORT), 0, 0xff)
