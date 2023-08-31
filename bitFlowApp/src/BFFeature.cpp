@@ -55,7 +55,7 @@ bool BFFeature::isAvailable() {
     BFGTLUtilU32 value;
     size_t size = sizeof(value);
     if (!mIsImplemented) return false;
-    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ACCESS, &value, &size), "isAvailable", "BFGTLNodeInquire");
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ACCESS, &value, &size), "isAvailable", "BFGTLNodeRead");
     return (value == BFGTL_ACCESS_NA) ? false : true;
  }
 
@@ -63,7 +63,7 @@ bool BFFeature::isReadable() {
     BFGTLUtilU32 value;
     size_t size = sizeof(value);
     if (!mIsImplemented) return false;
-    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ACCESS, &value, &size), "isReadable", "BFGTLNodeInquire");
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ACCESS, &value, &size), "isReadable", "BFGTLNodeRead");
     return ((value == BFGTL_ACCESS_RO) || (value == BFGTL_ACCESS_RW)) ? true : false;
 }
 
@@ -71,7 +71,7 @@ bool BFFeature::isWritable() {
     BFGTLUtilU32 value;
     size_t size = sizeof(value);
     if (!mIsImplemented) return false;
-    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ACCESS, &value, &size), "isWritable", "BFGTLNodeInquire");
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ACCESS, &value, &size), "isWritable", "BFGTLNodeRead");
     //printf("BFFeature::isWritable nodeName=%s, access=%d\n", mNodeName.c_str(), value);
     return ((value == BFGTL_ACCESS_WO) || (value == BFGTL_ACCESS_RW)) ? true : false;
 }
@@ -115,7 +115,7 @@ void BFFeature::writeInteger(epicsInt64 value) {
 }
 
 bool BFFeature::readBoolean() { 
-    epicsInt64 value;
+    BFBOOL value;
     size_t size = sizeof(value);
     if (mNodeType != BFGTL_NODE_TYPE_BOOLEAN) printf("BFFeature::readBoolean warning node type=%d\n", mNodeType);
     checkError(BFGTLNodeRead(mNode, BFGTL_NODE_VALUE, &value, &size), "readBoolean", "BFGTLNodeRead");
@@ -123,7 +123,7 @@ bool BFFeature::readBoolean() {
 }
 
 void BFFeature::writeBoolean(bool bval) {
-    epicsInt64 value = bval;
+    BFBOOL value = bval;
     size_t size = sizeof(value);
     if (mNodeType != BFGTL_NODE_TYPE_BOOLEAN) printf("BFFeature::writeBoolean warning node type=%d\n", mNodeType);
     checkError(BFGTLNodeWrite(mNode, BFGTL_NODE_VALUE, &value, size), "writeBoolean", "BFGTLNodeWrite");
@@ -243,29 +243,29 @@ void BFFeature::writeCommand() {
 }
 
 void BFFeature::readEnumChoices(std::vector<std::string>& enumStrings, std::vector<int>& enumValues) {
-    size_t numEnums;
-    size_t size = sizeof(numEnums);
     if (mNodeType != BFGTL_NODE_TYPE_ENUMERATION) printf("BFFeature::readEnumChoices warning node type=%d\n", mNodeType);
-    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ENTRY_COUNT, &numEnums, &size), "readEnumChoices", "BFGTLNodeRead");
-    size = 0;
+    size_t size = 0;
     // The first call with BFGTL_NODE_ENTRY_NAMES is with pValue=0 so it just returns the required size in size;
-    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ENTRY_SYMBOLICS, 0, &size), "readEnumChoices", "BFGTLNodeRead");
-    // Allocate the required buffer and call again with pValue = pBuff
-    char *pBuff = reinterpret_cast<char*>(malloc(size));
-    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ENTRY_SYMBOLICS, pBuff, &size), "readEnumChoices", "BFGTLNodeRead");
-    size_t *pOffset = reinterpret_cast<size_t*>(pBuff);
-    size = numEnums * sizeof(epicsInt64);
-    epicsInt64 *pValues = reinterpret_cast<epicsInt64*>(malloc(size));
-    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ENTRY_VALUES, pValues, &size), "readEnumChoices", "BFGTLNodeRead");    
-    for (size_t i=0; i<numEnums; i++, pOffset++) {
-        if (*pOffset == 0) {
-            printf("Error, offset should not be 0\n");
-        }
-        char *pStr = pBuff + *pOffset;
-//        if (IsAvailable(pEntry) && IsReadable(pEntry)) {
-        if (true) {
-            enumStrings.push_back(pStr);
-            enumValues.push_back((int)pValues[i]);
-        }
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ENTRY_NAMES, 0, &size), "readEnumChoices", "BFGTLNodeRead");
+    std::vector<char> entryNameTable(size);
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_ENTRY_NAMES, entryNameTable.data(), &size), "readEnumChoices", "BFGTLNodeRead");
+    const size_t *entryNameOffset = reinterpret_cast<size_t*>(entryNameTable.data());
+    while (*entryNameOffset) {
+        BFGTLNode hNode;
+        char *entryName = &entryNameTable[*entryNameOffset++];
+        checkError(BFGTLNodeOpen(mDev, entryName, &hNode), "readEnumChoices", "BFGTLNodeOpen");
+        BFGTLUtilU32 value;
+        size = sizeof(value);
+        checkError(BFGTLNodeRead(hNode, BFGTL_NODE_ACCESS, &value, &size), "readEnumChoices", "BFGTLNodeRead BFGTL_NDDE_ACCESS");
+        if ((value == BFGTL_ACCESS_RO) || (value == BFGTL_ACCESS_RW)) {
+            epicsInt64 entryValue;
+            size = sizeof(entryValue);
+            checkError(BFGTLNodeRead(hNode, BFGTL_NODE_VALUE, &entryValue, &size), "readEnumChoices", "BFGTLNodeRead BFGTL_NODE_VALUE");
+            char str[256];
+            size = sizeof(str);
+            checkError(BFGTLNodeRead(hNode, BFGTL_NODE_SYMBOLIC, str, &size), "readEnumChoices", "BFGTLNodeRead BFGTL_NODE_SYMBOLIC");
+            enumStrings.push_back(str);
+            enumValues.push_back((int)entryValue);
+        }      
     }
 }
