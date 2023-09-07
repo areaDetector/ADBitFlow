@@ -27,16 +27,16 @@
 #include <epicsExit.h>
 
 #ifdef _WIN32
-#include  "CircularInterface.h"
-#include  "CiApi.h"
-#include  "BiApi.h"
-#include	"BFApi.h"
-#include	"BFErApi.h"
-#include	"DSApi.h"
-#include	"BFGTLUtilApi.h"
+#include "CircularInterface.h"
+#include "CiApi.h"
+#include "BiApi.h"
+#include "BFApi.h"
+#include "BFErApi.h"
+#include "DSApi.h"
+#include "BFGTLUtilApi.h"
 
 #else
-#include	"BFciLib.h"
+#include "BFciLib.h"
 #endif
 
 using namespace std;
@@ -54,28 +54,40 @@ using namespace BufferAcquisition;
 
 static const char *driverName = "ADBitFlow";
 
-// Size of message queue for callback function
-#define CALLBACK_MESSAGE_QUEUE_SIZE 100
+typedef enum {
+    TimeStampCamera,
+    TimeStampEPICS
+} BFTimeStamp_t;
+
+typedef enum {
+    UniqueIdCamera,
+    UniqueIdDriver
+} BFUniqueId_t;
 
 /** Configuration function to configure one camera.
  *
  * This function need to be called once for each camera to be used by the IOC. A call to this
  * function instantiates one object from the ADBitFlow class.
  * \param[in] portName asyn port name to assign to the camera.
- * \param[in] boardId The board number.  Default is 0.
+ * \param[in] boardNum The board number.  Default is 0.
  * \param[in] numBFBuffers The number of buffers to allocate in BitFlow driver.
  *            If set to 0 or omitted the default of 100 will be used.
+ * \param(in) numThreads Number of image processing threads.  If set to 0 or omitted 2 will be used.
  * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
  * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
  * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
  */
-extern "C" int ADBitFlowConfig(const char *portName, int boardId, int numBFBuffers,
+extern "C" int ADBitFlowConfig(const char *portName, int boardNum, int numBFBuffers, int numThreads,
                                size_t maxMemory, int priority, int stackSize)
 {
-    new ADBitFlow( portName, boardId, numBFBuffers, maxMemory, priority, stackSize);
+    new ADBitFlow(portName, boardNum, numBFBuffers, numThreads, maxMemory, priority, stackSize);
     return asynSuccess;
 }
 
+struct workerQueueElement {
+    BiCirHandle cirHandle;
+    int uniqueId;
+};
 
 static void c_shutdown(void *arg)
 {
@@ -83,26 +95,35 @@ static void c_shutdown(void *arg)
    p->shutdown();
 }
 
-static void imageGrabTaskC(void *drvPvt)
+static void waitImageThreadC(void *drvPvt)
 {
     ADBitFlow *pPvt = (ADBitFlow *)drvPvt;
 
-    pPvt->imageGrabTask();
+    pPvt->waitImageThread();
 }
+
+static void processImageThreadC(void *drvPvt)
+{
+    ADBitFlow *pPvt = (ADBitFlow *)drvPvt;
+
+    pPvt->processImageThread();
+}
+
 
 /** Constructor for the ADBitFlow class
  * \param[in] portName asyn port name to assign to the camera.
- * \param[in] boardId The board number.  Default is 0.
+ * \param[in] boardNum The board number.  Default is 0.
  * \param[in] numBFBuffers The number of buffers to allocate in BitFlow driver.
  *            If set to 0 or omitted the default of 100 will be used.
+ * \param(in) numThreads Number of image processing threads.  If set to 0 or omitted 2 will be used.
  * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
  * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
  * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
  */
-ADBitFlow::ADBitFlow(const char *portName, int boardId, int numBFBuffers,
+ADBitFlow::ADBitFlow(const char *portName, int boardNum, int numBFBuffers, int numThreads,
                          size_t maxMemory, int priority, int stackSize )
     : ADGenICam(portName, maxMemory, priority, stackSize),
-    boardId_(boardId), pBoard_(0), hBoard_(0), hDevice_(0), numBFBuffers_(numBFBuffers), exiting_(0), pRaw_(NULL), uniqueId_(0)
+    boardNum_(boardNum), pBoard_(0), hBoard_(0), hDevice_(0), numBFBuffers_(numBFBuffers), exiting_(0), uniqueId_(0)
 {
     static const char *functionName = "ADBitFlow";
     asynStatus status;
@@ -111,6 +132,8 @@ ADBitFlow::ADBitFlow(const char *portName, int boardId, int numBFBuffers,
     
     if (numBFBuffers_ == 0) numBFBuffers_ = 100;
     if (numBFBuffers_ < 10) numBFBuffers_ = 10;
+    messageQueueSize_ = numBFBuffers;
+    if (numThreads <= 0) numThreads = 2;
 
     status = connectCamera();
     if (status) {
@@ -122,24 +145,20 @@ ADBitFlow::ADBitFlow(const char *portName, int boardId, int numBFBuffers,
         return;
     }
 
-/*
-    createParam(SPConvertPixelFormatString,         asynParamInt32,   &SPConvertPixelFormat);
-    createParam(SPStartedFrameCountString,          asynParamInt32,   &SPStartedFrameCount);
-    createParam(SPDeliveredFrameCountString,        asynParamInt32,   &SPDeliveredFrameCount);
-    createParam(SPReceivedFrameCountString,         asynParamInt32,   &SPReceivedFrameCount);
-    createParam(SPIncompleteFrameCountString,       asynParamInt32,   &SPIncompleteFrameCount);
-    createParam(SPLostFrameCountString,             asynParamInt32,   &SPLostFrameCount);
-    createParam(SPDroppedFrameCountString,          asynParamInt32,   &SPDroppedFrameCount);
-    createParam(SPInputBufferCountString,           asynParamInt32,   &SPInputBufferCount);
-    createParam(SPOutputBufferCountString,          asynParamInt32,   &SPOutputBufferCount);
-    createParam(SPReceivedPacketCountString,        asynParamInt32,   &SPReceivedPacketCount);
-    createParam(SPMissedPacketCountString,          asynParamInt32,   &SPMissedPacketCount);
-    createParam(SPResendRequestedPacketCountString, asynParamInt32,   &SPResendRequestedPacketCount);
-    createParam(SPResendReceivedPacketCountString,  asynParamInt32,   &SPResendReceivedPacketCount);
-    createParam(SPTimeStampModeString,              asynParamInt32,   &SPTimeStampMode);
-    createParam(SPUniqueIdModeString,               asynParamInt32,   &SPUniqueIdMode);
-*/
+    createParam(BFTimeStampModeString,              asynParamInt32,   &BFTimeStampMode);
+    createParam(BFUniqueIdModeString,               asynParamInt32,   &BFUniqueIdMode);
+    createParam(BFBufferSizeString,                 asynParamInt32,   &BFBufferSize);
+    createParam(BFBufferQueueSizeString,            asynParamInt32,   &BFBufferQueueSize);
+    createParam(BFMessageQueueSizeString,           asynParamInt32,   &BFMessageQueueSize);
+    createParam(BFMessageQueueFreeString,           asynParamInt32,   &BFMessageQueueFree);
+    createParam(BFProcessTotalTimeString,         asynParamFloat64,   &BFProcessTotalTime);
+    createParam(BFProcessCopyTimeString,          asynParamFloat64,   &BFProcessCopyTime);
+
     /* Set initial values of some parameters */
+    setIntegerParam(BFBufferSize, numBFBuffers);
+    setIntegerParam(BFBufferQueueSize, 0);
+    setIntegerParam(BFMessageQueueSize, messageQueueSize_);
+    setIntegerParam(BFMessageQueueFree, messageQueueSize_);
     setIntegerParam(NDDataType, NDUInt8);
     setIntegerParam(NDColorMode, NDColorModeMono);
     setIntegerParam(NDArraySizeZ, 0);
@@ -147,24 +166,31 @@ ADBitFlow::ADBitFlow(const char *portName, int boardId, int numBFBuffers,
     setIntegerParam(ADMinY, 0);
     setStringParam(ADStringToServer, "<not used by driver>");
     setStringParam(ADStringFromServer, "<not used by driver>");
-
-/*
-    // Create the message queue to pass images from the callback class
-    pCallbackMsgQ_ = new epicsMessageQueue(CALLBACK_MESSAGE_QUEUE_SIZE, sizeof(ImagePtr));
-    if (!pCallbackMsgQ_) {
+    
+    // Create the message queue to pass images to the worker threads
+    // The number of queue elements is the number of buffers
+    pMsgQ_ = new epicsMessageQueue(messageQueueSize_, sizeof(workerQueueElement));
+    if (!pMsgQ_) {
         cantProceed("ADBitFlow::ADBitFlow epicsMessageQueueCreate failure\n");
     }
 
-    //pImageEventHandler_ = new ADBitFlowImageEventHandler(pCallbackMsgQ_);
-    //pCamera_->RegisterEventHandler(*pImageEventHandler_);
-*/
     startEventId_ = epicsEventCreate(epicsEventEmpty);
 
-    // launch image read task
-    epicsThreadCreate("ADBitFlowImageTask", 
-                      epicsThreadPriorityMedium,
+    // Launch the thread that waits for images
+    epicsThreadCreate("ADBFWaitImageThread", 
+                      epicsThreadPriorityHigh,
                       epicsThreadGetStackSize(epicsThreadStackMedium),
-                      imageGrabTaskC, this);
+                      waitImageThreadC, this);
+        
+
+    // Launch the threads that process images
+    for (int i=0; i<numThreads; i++) {
+        epicsThreadCreate("ADBFProcessImageThread", 
+                          epicsThreadPriorityMedium,
+                          epicsThreadGetStackSize(epicsThreadStackMedium),
+                          processImageThreadC, this);
+    }
+
     // shutdown on exit
     epicsAtExit(c_shutdown, this);
 
@@ -200,7 +226,7 @@ asynStatus ADBitFlow::connectCamera(void)
     // Open the board using default camera file
     BFU32 cirSetupOptions = 0;
     BFU32 errorMode = CirErStop;
-    pBoard_ = new CircularInterface(boardId_, numBFBuffers_, errorMode, cirSetupOptions);
+    pBoard_ = new CircularInterface(boardNum_, numBFBuffers_, errorMode, cirSetupOptions);
     if (!pBoard_) {
         asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
             "%s::%s error calling BiBrdOpen, could not open board.\n",
@@ -266,32 +292,28 @@ asynStatus ADBitFlow::connectCamera(void)
  *
  */
 
-void ADBitFlow::imageGrabTask()
+void ADBitFlow::waitImageThread()
 {
     asynStatus status = asynSuccess;
-    int imageCounter;
-    int numImages, numImagesCounter;
+    BFU32 stat;
+    BiCirHandle cirHandle;
+    int numImages;
     int imageMode;
-    int arrayCallbacks;
-    epicsTimeStamp startTime;
-    int acquire;
-    static const char *functionName = "imageGrabTask";
+    int imagesCollected;
+    bool waitingForImages = false;
+    static const char *functionName = "waitImageThread";
 
     lock();
 
     while (1) {
-        // Is acquisition active? 
-        getIntegerParam(ADAcquire, &acquire);
-        // If we are not acquiring then wait for a semaphore that is given when acquisition is started 
-        if (!acquire) {
-            setIntegerParam(ADStatus, ADStatusIdle);
-            callParamCallbacks();
-
-            // Wait for a signal that tells this thread that the transmission
-            // has started and we can start asking for image buffers...
-            asynPrint(pasynUserSelf, ASYN_TRACE_FLOW,
+        if (!waitingForImages) {
+            // Wait for a signal that tells this thread that acquisition
+            // has started and we can start reading image buffers...
+            asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
                 "%s::%s waiting for acquire to start\n", 
                 driverName, functionName);
+            setIntegerParam(ADStatus, ADStatusIdle);
+            callParamCallbacks();
             // Release the lock while we wait for an event that says acquire has started, then lock again
             unlock();
             epicsEventWait(startEventId_);
@@ -301,237 +323,138 @@ void ADBitFlow::imageGrabTask()
                 driverName, functionName);
             setIntegerParam(ADNumImagesCounter, 0);
             setIntegerParam(ADAcquire, 1);
+            getIntegerParam(ADNumImages, &numImages);
+            getIntegerParam(ADImageMode, &imageMode);
+            imagesCollected = 0;
+            waitingForImages = true;
         }
 
-        // Get the current time 
-        epicsTimeGetCurrent(&startTime);
         // We are now waiting for an image
         setIntegerParam(ADStatus, ADStatusWaiting);
+
         // Call the callbacks to update any changes
         callParamCallbacks();
 
+        asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s waiting for frame\n", driverName, functionName);
         unlock();
-        status = grabImage();
+        int BFStatus = pBoard_->waitDoneFrame(INFINITE, &cirHandle);
         lock();
-/*
-        if (status == asynError) {
-            // remember to release the NDArray back to the pool now
-            // that we are not using it (we didn't get an image...)
-            if (pRaw_) pRaw_->release();
-            pRaw_ = NULL;
-            continue;
+        asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s got frame status=%d BufferNumber=%d\n", 
+                  driverName, functionName, BFStatus, cirHandle.BufferNumber);
+        switch (BFStatus) {
+          case BI_OK: {
+              // Mark the buffer to hold
+              asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s calling setBufferStatus for BIHOLD\n", driverName, functionName);
+              stat = pBoard_->setBufferStatus(cirHandle, BIHOLD);
+              asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s setBufferStatus returned %d\n", driverName, functionName, stat);
+              // Send a message to the processing thread
+              struct workerQueueElement wqe{cirHandle, uniqueId_};
+              uniqueId_++;
+              asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s sending message\n", driverName, functionName);
+              if (pMsgQ_->send(&wqe, sizeof(wqe)) != 0) {
+                  asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s error calling pMsgQ_->send()\n", driverName, functionName);
+              }
+              imagesCollected++;
+              if ((imageMode == ADImageSingle) || ((imageMode == ADImageMultiple) && (imagesCollected >= numImages))) {
+                  pBoard_->cirControl(BISTOP, BiAsync);
+                  waitingForImages = false;
+              }
+            }
+            break;
+          case BI_CIR_STOPPED:
+            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                      "%s::%s Circular acquisition stopped\n",
+                      driverName, functionName);
+            waitingForImages = false;
+            break;
+          case BI_CIR_ABORTED:
+             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                       "%s::%s Circular acquisition aborted\n",
+                       driverName, functionName);
+             setIntegerParam(ADStatus, ADStatusIdle);
+printf("Set idle and calling stopCapture()\n");
+             stopCapture();
+             waitingForImages = false;
+             break;
+          case BI_ERROR_CIR_WAIT_TIMEOUT:
+             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                       "%s::%s Circular wait timeout\n",
+                       driverName, functionName);
+             break;
+          case BI_ERROR_CIR_WAIT_FAILED:
+             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                       "%s::%s Circular wait failed\n",
+                       driverName, functionName);
+             break;
+          case BI_ERROR_QEMPTY:
+             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                       "%s::%s Circular queue was empty\n",
+                       driverName, functionName);
+             break;
+          default:
+             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                       "%s::%s Unknown status return from waitDoneFrame = %d\n",
+                       driverName, functionName, BFStatus);
+             break;
         }
-*/
-        getIntegerParam(NDArrayCounter, &imageCounter);
-        getIntegerParam(ADNumImages, &numImages);
-        getIntegerParam(ADNumImagesCounter, &numImagesCounter);
-        getIntegerParam(ADImageMode, &imageMode);
-        getIntegerParam(NDArrayCallbacks, &arrayCallbacks);
-        imageCounter++;
-        numImagesCounter++;
-        setIntegerParam(NDArrayCounter, imageCounter);
-        setIntegerParam(ADNumImagesCounter, numImagesCounter);
-
-/*
-        if (arrayCallbacks) {
-            // Call the NDArray callback
-            doCallbacksGenericPointer(pRaw_, NDArrayData, 0);
-        }
-        // Release the NDArray buffer now that we are done with it.
-        // After the callback just above we don't need it anymore
-        pRaw_->release();
-        pRaw_ = NULL;
-
-*/
-        getIntegerParam(ADAcquire, &acquire);
-        // See if acquisition is done if we are in single or multiple mode
-        // The check for acquire=0 means this thread will call stopCapture and hence pCamera_->EndAcquisition().
-        // Failure to do this result in hang in call to pCamera_->EndAcquisition() in other thread
-        if ((acquire == 0) || 
-            (imageMode == ADImageSingle) || 
-            ((imageMode == ADImageMultiple) && (numImagesCounter >= numImages))) {
-            setIntegerParam(ADStatus, ADStatusIdle);
-            status = stopCapture();
-        }
-/*
-        try {
-            const TransportLayerStream& streamStats = pCamera_->TLStream;
-            pTLStreamNodeMap_->InvalidateNodes();
-            setIntegerParam(SPStartedFrameCount,          (int)streamStats.StreamStartedFrameCount.GetValue());
-            setIntegerParam(SPDeliveredFrameCount,        (int)streamStats.StreamDeliveredFrameCount.GetValue());
-            setIntegerParam(SPReceivedFrameCount,         (int)streamStats.StreamReceivedFrameCount.GetValue());
-            setIntegerParam(SPIncompleteFrameCount,       (int)streamStats.StreamIncompleteFrameCount.GetValue());
-            setIntegerParam(SPLostFrameCount,             (int)streamStats.StreamLostFrameCount.GetValue());
-            setIntegerParam(SPDroppedFrameCount,          (int)streamStats.StreamDroppedFrameCount.GetValue());
-            setIntegerParam(SPInputBufferCount,           (int)streamStats.StreamInputBufferCount.GetValue());
-            setIntegerParam(SPOutputBufferCount,          (int)streamStats.StreamOutputBufferCount.GetValue());
-            setIntegerParam(SPReceivedPacketCount,        (int)streamStats.StreamReceivedPacketCount.GetValue());
-            setIntegerParam(SPMissedPacketCount,          (int)streamStats.StreamMissedPacketCount.GetValue());
-            setIntegerParam(SPResendRequestedPacketCount, (int)streamStats.StreamPacketResendRequestedPacketCount.GetValue());
-            setIntegerParam(SPResendReceivedPacketCount,  (int)streamStats.StreamPacketResendReceivedPacketCount.GetValue());
-        }
-        catch (Spinnaker::Exception &e) {
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-                "%s::%s exception %s\n",
-                driverName, functionName, e.what());
-        }
-*/
-        callParamCallbacks();
     }
 }
 
-asynStatus ADBitFlow::grabImage()
+void ADBitFlow::processImageThread()
 {
     asynStatus status = asynSuccess;
+    NDArray *pRaw;
     size_t nRows, nCols;
-    NDDataType_t dataType;
-    NDColorMode_t colorMode;
+    NDDataType_t dataType = NDUInt8;
+    NDColorMode_t colorMode = NDColorModeMono;
     int timeStampMode;
     int uniqueIdMode;
     int convertPixelFormat;
     bool imageConverted = false;
-    int numColors;
+    int numColors=1;
     size_t dims[3];
     int pixelSize;
-    size_t dataSize, dataSizePG;
+    size_t dataSize;
+    BFU32 frameSize;
     void *pData;
     int nDims;
+    int acquire;
+    int numImages;
     BiCirHandle cirHandle;
-    static const char *functionName = "grabImage";
-    
-    try {
-        //unlock();
-        int status = pBoard_->waitDoneFrame(INFINITE, &cirHandle);
-        switch (status) {
-          case BI_CIR_STOPPED:
-            printf("Circular acquisition stopped\n"); break;
-          case BI_CIR_ABORTED:
-            printf("Circular acquisition aborted\n"); break;
-          case BI_ERROR_CIR_WAIT_TIMEOUT:
-            printf("Circular wait timeout\n"); break;
-          case BI_ERROR_CIR_WAIT_FAILED:
-            printf("Circular wait failed\n"); break;
-          case BI_ERROR_QEMPTY:
-            printf("Circular queue was empty\n"); break;
-        }
-/*        
-        pImage = *imagePtrAddr;
-        // Delete the ImagePtr that was passed to us
-        delete imagePtrAddr;
-        imageStatus = pImage->GetImageStatus();
-        if (imageStatus != SPINNAKER_IMAGE_STATUS_NO_ERROR) {
+    int imageCounter;
+    int numImagesCounter;
+    int imageMode;
+    int arrayCallbacks;
+    epicsTime t1, t2, t3, t4;
+    struct workerQueueElement wqe;
+    static const char *functionName = "processImageThread";
+
+    while (true) {
+        unlock();
+        int recvSize = pMsgQ_->receive(&wqe, sizeof(wqe));
+        t1=t2=t3=t4 = epicsTime::getCurrent();
+        lock();
+        if (recvSize != sizeof(wqe)) {
             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
-                "%s::%s error GetImageStatus  %d, description:  %s\n",
-                driverName, functionName, imageStatus, Image::GetImageStatusDescription(imageStatus));
-            pImage->Release();
-            return asynError;
-        } 
-        if (pImage->IsIncomplete()) {
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
-                "%s::%s error image is incomplete\n",
-                driverName, functionName);
-            pImage->Release();
-            return asynError;
+                    "%s::%s error receiving from message queue\n",
+                    driverName, functionName);
+            continue;
         }
-        nCols = pImage->GetWidth();
-        nRows = pImage->GetHeight();
-        // Print the first 16 bytes of the buffer in hex
-        //pData = pImage->GetData();
-        //for (int i=0; i<16; i++) printf("%x ", ((epicsUInt8 *)pData)[i]); printf("\n");
-     
-        // Convert the pixel format if requested
-        getIntegerParam(SPConvertPixelFormat, &convertPixelFormat);
-        if (convertPixelFormat != SPPixelConvertNone) {
-            PixelFormatEnums convertedFormat;
-            switch (convertPixelFormat) {
-                case SPPixelConvertMono8:
-                    convertedFormat = PixelFormat_Mono8;
-                    break;
-                case SPPixelConvertMono16:
-                    convertedFormat = PixelFormat_Mono16;
-                    break;
-                case SPPixelConvertRaw16:
-                    convertedFormat = PixelFormat_Raw16;
-                    break;
-                case SPPixelConvertRGB8:
-                    convertedFormat = PixelFormat_RGB8;
-                    break;
-                case SPPixelConvertRGB16:
-                    convertedFormat = PixelFormat_RGB16;
-                    break;
-                default:
-                    asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
-                        "%s::%s Error: Unknown pixel conversion format %d\n",
-                        driverName, functionName, convertPixelFormat);
-                    convertedFormat = PixelFormat_Mono8;
-                    break;
-            }
-    
-            pixelFormat = pImage->GetPixelFormat();
-            ImageProcessor processor; 
-            unlock();
-            try {
-                //epicsTimeStamp tstart, tend;
-                //epicsTimeGetCurrent(&tstart);
-                pImage  = processor.Convert(pImage, convertedFormat);
-                //epicsTimeGetCurrent(&tend);
-                //asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s time for pImage->convert=%f\n", 
-                //    driverName, functionName, epicsTimeDiffInSeconds(&tend, &tstart));
-                imageConverted = true;
-            }
-            catch (Spinnaker::Exception &e) {
-                 asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-                     "%s::%s pixel format conversion exception %s\n",
-                 driverName, functionName, e.what());
-            }
-            lock();
-        }
-    
-        pixelFormat = pImage->GetPixelFormat();
-        switch (pixelFormat) {
-            case PixelFormat_Mono8:
-            case PixelFormat_Raw8:
-                dataType = NDUInt8;
-                colorMode = NDColorModeMono;
-                numColors = 1;
-                pixelSize = 1;
-                break;
-    
-            case PixelFormat_BayerGB8:
-                dataType = NDUInt8;
-                colorMode = NDColorModeBayer;
-                numColors = 1;
-                pixelSize = 1;
-                break;
-            case PixelFormat_RGB8:
-                dataType = NDUInt8;
-                colorMode = NDColorModeRGB1;
-                numColors = 3;
-                pixelSize = 1;
-                break;
-    
-            case PixelFormat_Mono16:
-            case PixelFormat_Raw16:
-                dataType = NDUInt16;
-                colorMode = NDColorModeMono;
-                numColors = 1;
-                pixelSize = 2;
-                break;
-    
-            case PixelFormat_RGB16:
-                dataType = NDUInt16;
-                colorMode = NDColorModeRGB1;
-                numColors = 3;
-                pixelSize = 2;
-                break;
-    
-            default:
-                asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
-                    "%s:%s: unsupported pixel format=0x%x\n",
-                    driverName, functionName, pixelFormat);
-                return asynError;
-        }
-    
+        // If acquisition has stopped then ignore this frame
+        //getIntegerParam(ADAcquire, &acquire);
+        //if (!acquire) continue;
+
+        cirHandle = wqe.cirHandle;
+        
+        // Get the image information
+        nCols = pBoard_->getBrdInfo(BiCamInqXSize);
+        nRows = pBoard_->getBrdInfo(BiCamInqYSize0);
+        pixelSize = pBoard_->getBrdInfo(BiCamInqBytesPerPix);
+        frameSize = pBoard_->getBrdInfo(BiCamInqFrameSize0);
+        asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, 
+                  "%s::%s nCols=%u, nRows=%u, pixelSize=%u, frameSize=%u, BufferNumber=%u, FrameCount=%u, NumItemsOnQueue=%u\n",
+                  driverName, functionName, nCols, nRows, pixelSize, frameSize, cirHandle.BufferNumber, cirHandle.FrameCount, cirHandle.NumItemsOnQueue);
+
         if (numColors == 1) {
             nDims = 2;
             dims[0] = nCols;
@@ -544,105 +467,135 @@ asynStatus ADBitFlow::grabImage()
         }
         dataSize = dims[0] * dims[1] * pixelSize;
         if (nDims == 3) dataSize *= dims[2];
-        dataSizePG = pImage->GetBufferSize();
-        // Note, we should be testing for equality here.  However, there appears to be a bug in the
-        // SDK when images are converted.  When converting from raw8 to mono8, for example, the
-        // size returned by GetDataSize is the size of an RGB8 image, not a mono8 image.
-        if (dataSize > dataSizePG) {
+        if (dataSize != frameSize) {
             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
                 "%s:%s: data size mismatch: calculated=%lu, reported=%lu\n",
-                driverName, functionName, (long)dataSize, (long)dataSizePG);
-            //return asynError;
+                driverName, functionName, (long)dataSize, (long)frameSize);
         }
         setIntegerParam(NDArraySizeX, (int)nCols);
         setIntegerParam(NDArraySizeY, (int)nRows);
         setIntegerParam(NDArraySize, (int)dataSize);
-        setIntegerParam(NDDataType,dataType);
+        setIntegerParam(NDDataType, dataType);
         if (nDims == 3) {
             colorMode = NDColorModeRGB1;
         } 
         setIntegerParam(NDColorMode, colorMode);
+        getIntegerParam(NDArrayCallbacks, &arrayCallbacks);
+        if (arrayCallbacks) {
     
-        pRaw_ = pNDArrayPool->alloc(nDims, dims, dataType, 0, NULL);
-        if (!pRaw_) {
-            // If we didn't get a valid buffer from the NDArrayPool we must abort
-            // the acquisition as we have nowhere to dump the data...
-            setIntegerParam(ADStatus, ADStatusAborting);
-            callParamCallbacks();
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-                "%s::%s [%s] ERROR: Serious problem: not enough buffers left! Aborting acquisition!\n",
-                driverName, functionName, portName);
-            setIntegerParam(ADAcquire, 0);
-            return(asynError);
-        }
-        pData = pImage->GetData();
-        // Print the first 8 pixels of the buffer in decimal
-        //for (int i=0; i<8; i++) printf("%u ", ((epicsUInt16 *)pData)[i]); printf("\n");
-        if (pData) {
-            memcpy(pRaw_->pData, pData, dataSize);
-        } else {
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-                "%s::%s [%s] ERROR: pData is NULL!\n",
-                driverName, functionName, portName);
-            return asynError;
-        }
-    
-        // Put the frame number into the buffer
-        getIntegerParam(SPUniqueIdMode, &uniqueIdMode);
-        if (uniqueIdMode == UniqueIdCamera) {
-            pRaw_->uniqueId = (int)pImage->GetFrameID();
-        } else {
-            pRaw_->uniqueId = uniqueId_;
-        }
-        uniqueId_++;
-        updateTimeStamp(&pRaw_->epicsTS);
-        getIntegerParam(SPTimeStampMode, &timeStampMode);
-        // Set the timestamps in the buffer
-        if (timeStampMode == TimeStampCamera) {
-            long long timeStamp = pImage->GetTimeStamp();
-            if (timeStamp == 0) {
-                asynPrint(pasynUserSelf, ASYN_TRACE_WARNING,
-                    "%s::%s pImage->GetTimeStamp() returned 0\n",
-                    driverName, functionName);
+            asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s allocating pRaw\n", driverName, functionName);
+            pRaw = pNDArrayPool->alloc(nDims, dims, dataType, 0, NULL);
+            if (!pRaw) {
+                // If we didn't get a valid buffer from the NDArrayPool we must abort
+                // the acquisition as we have nowhere to dump the data...
+                setIntegerParam(ADStatus, ADStatusAborting);
+                callParamCallbacks();
+                asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
+                    "%s::%s [%s] ERROR: Serious problem: not enough buffers left! Aborting acquisition!\n",
+                    driverName, functionName, portName);
+                setIntegerParam(ADAcquire, 0);
+                continue;
             }
-            pRaw_->timeStamp = timeStamp / 1e9;
-        } else {
-            pRaw_->timeStamp = pRaw_->epicsTS.secPastEpoch + pRaw_->epicsTS.nsec/1e9;
-        }
-        try {
-            // We get a "No Stream Available" exception if pImage points to an image resulting from ConvertPixeFormat
-            // Not sure why?
-            if (!imageConverted) {
-                pImage->Release();
-            } 
-        }
-        catch (Spinnaker::Exception &e) {
-            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-                "%s::%s pImage->Release() exception %s\n",
-                driverName, functionName, e.what());
-        }
-        // Get any attributes that have been defined for this driver        
-        getAttributes(pRaw_->pAttributeList);
+            pData = cirHandle.pBufData;
+            if (pData) {
+                asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s copying data\n", driverName, functionName);
+                unlock();
+                t2 = epicsTime::getCurrent();
+                memcpy(pRaw->pData, pData, dataSize);
+                t3 = epicsTime::getCurrent();
+                lock();
+            } else {
+                asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
+                    "%s::%s [%s] ERROR: pData is NULL!\n",
+                    driverName, functionName, portName);
+                continue;
+            }
         
-        // Change the status to be readout...
-        setIntegerParam(ADStatus, ADStatusReadout);
-        callParamCallbacks();
+            // Put the frame number into the buffer
+            getIntegerParam(BFUniqueIdMode, &uniqueIdMode);
+            if (uniqueIdMode == UniqueIdCamera) {
+                pRaw->uniqueId = cirHandle.FrameCount;
+            } else {
+                pRaw->uniqueId = wqe.uniqueId;
+            }
+            updateTimeStamp(&pRaw->epicsTS);
+            getIntegerParam(BFTimeStampMode, &timeStampMode);
+            // Set the timestamps in the buffer
+            if (timeStampMode == TimeStampCamera) {
+                // Should use cirHandle.HiResTimeStamp but its fields are all zero?
+                pRaw->timeStamp = cirHandle.TimeStamp.hour*3600 + 
+                                  cirHandle.TimeStamp.min*60 + 
+                                  cirHandle.TimeStamp.sec +
+                                  cirHandle.TimeStamp.msec/1000.;
+            } else {
+                pRaw->timeStamp = pRaw->epicsTS.secPastEpoch + pRaw->epicsTS.nsec/1e9;
+            }
     
-        pRaw_->pAttributeList->add("ColorMode", "Color mode", NDAttrInt32, &colorMode);
-        return status;
-*/
+            // Get any attributes that have been defined for this driver        
+            getAttributes(pRaw->pAttributeList);
+            
+            // Change the status to be readout...
+            setIntegerParam(ADStatus, ADStatusReadout);
+        
+            pRaw->pAttributeList->add("ColorMode", "Color mode", NDAttrInt32, &colorMode);
+        }
+
         // Mark the buffer as available
+        asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s marking buffer as available\n", driverName, functionName);
         pBoard_->setBufferStatus(cirHandle, BIAVAILABLE);
-    }
+        getIntegerParam(NDArrayCounter, &imageCounter);
+        getIntegerParam(ADNumImages, &numImages);
+        getIntegerParam(ADNumImagesCounter, &numImagesCounter);
+        getIntegerParam(ADImageMode, &imageMode);
+        getIntegerParam(NDArrayCallbacks, &arrayCallbacks);
+        imageCounter++;
+        numImagesCounter++;
+        setIntegerParam(NDArrayCounter, imageCounter);
+        setIntegerParam(ADNumImagesCounter, numImagesCounter);
 
-    catch (BFException e) {
-        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-            "%s::%s exception %s\n",
-            driverName, functionName, e.showErrorMsg());
-        return asynError;
-    }
+        if (arrayCallbacks) {
+            // Call the NDArray callback
+            asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s calling doCallbacksGenericPointer\n", driverName, functionName);
+            doCallbacksGenericPointer(pRaw, NDArrayData, 0);
+            // Release the NDArray buffer now that we are done with it.
+            // After the callback just above we don't need it anymore
+            //asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s releasing pRaw\n", driverName, functionName);
+            pRaw->release();
+            pRaw = NULL;
+        }
 
-    return asynSuccess;
+        // See if acquisition is done if we are in single or multiple mode
+        if ((imageMode == ADImageSingle) ||
+            ((imageMode == ADImageMultiple) && (numImagesCounter >= numImages))) {
+            setIntegerParam(ADStatus, ADStatusIdle);
+            asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s calling stopCapture\n", driverName, functionName);
+            status = stopCapture();
+        }
+        t4 = epicsTime::getCurrent();
+        setDoubleParam(BFProcessTotalTime, (t4-t1)*1000.);
+        setDoubleParam(BFProcessCopyTime, (t3-t2)*1000.);
+        setIntegerParam(BFMessageQueueFree, messageQueueSize_ - pMsgQ_->pending());
+        setIntegerParam(BFBufferQueueSize, cirHandle.NumItemsOnQueue);
+        callParamCallbacks();
+    }
+}
+
+asynStatus ADBitFlow::writeInt32(asynUser *pasynUser, epicsInt32 value)
+{
+    int function = pasynUser->reason;
+    int status;
+    int addr;
+    //static const char *functionName = "writeInt32";
+  
+    this->getAddress(pasynUser, &addr);
+    setIntegerParam(addr, function, value);
+    if ((function == ADSizeX) ||
+        (function == ADSizeY) ||
+        (function == ADMinX)  ||
+        (function == ADMinY)) {
+        //return this->setROI();
+    }
+    return ADGenICam::writeInt32(pasynUser, value);
 }
 
 asynStatus ADBitFlow::readEnum(asynUser *pasynUser, char *strings[], int values[], int severities[], 
@@ -651,14 +604,35 @@ asynStatus ADBitFlow::readEnum(asynUser *pasynUser, char *strings[], int values[
     int function = pasynUser->reason;
     //static const char *functionName = "readEnum";
 
+/*
     // There are a few enums we don't want to autogenerate the values
     if (function == SPConvertPixelFormat) {
         return asynError;
     }
-    
+*/    
     return ADGenICam::readEnum(pasynUser, strings, values, severities, nElements, nIn);
 }
 
+asynStatus ADBitFlow::setROI() 
+{
+    static const char *functionName = "writeInt32";
+
+    int minX, minY, sizeX, sizeY;
+    getIntegerParam(ADMinX, &minX);
+    getIntegerParam(ADMinY, &minY);
+    getIntegerParam(ADSizeX, &sizeX);
+    getIntegerParam(ADSizeY, &sizeY);
+    try {
+        printf("%s::%s calling setAcqROI(%d, %d, %d, %d)\n", driverName, functionName, minX, minY, sizeX, sizeY);
+        pBoard_->setAcqROI(minX, minY, sizeX, sizeY);
+    }
+    catch (BFException e) {
+        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s error calling setAcqROI error=%s\n",
+                  driverName, functionName, e.showErrorMsg());
+        return asynError;
+    }
+    return asynSuccess;
+}
 
 asynStatus ADBitFlow::startCapture()
 {
@@ -666,6 +640,8 @@ asynStatus ADBitFlow::startCapture()
     
     asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
     
+    GenICamFeature *acquisitionStart = mGCFeatureSet.getByName("AcquisitionStart");
+    acquisitionStart->writeCommand();
     pBoard_->cirControl(BISTART, BiAsync);
     epicsEventSignal(startEventId_);
     return asynSuccess;
@@ -677,21 +653,15 @@ asynStatus ADBitFlow::stopCapture()
     static const char *functionName = "stopCapture";
 
     asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
-    
+
     pBoard_->cirControl(BISTOP, BiAsync);
+    epicsThreadSleep(1.0);
+    GenICamFeature *acquisitionStop = mGCFeatureSet.getByName("AcquisitionStop");
+    acquisitionStop->writeCommand();
 
     // Set ADAcquire=0 which will tell the imageGrabTask to stop
     setIntegerParam(ADAcquire, 0);
     setShutter(0);
-
-    // Need to wait for the imageGrabTask to set the status to idle
-    while (1) {
-        getIntegerParam(ADStatus, &status);
-        if (status == ADStatusIdle) break;
-        unlock();
-        epicsThreadSleep(.1);
-        lock();
-    }
 
     return asynSuccess;
 }
@@ -789,22 +759,24 @@ void ADBitFlow::report(FILE *fp, int details)
 }
 
 static const iocshArg configArg0 = {"Port name", iocshArgString};
-static const iocshArg configArg1 = {"boardId", iocshArgInt};
+static const iocshArg configArg1 = {"boardNum", iocshArgInt};
 static const iocshArg configArg2 = {"# BitFlow buffers", iocshArgInt};
-static const iocshArg configArg3 = {"maxMemory", iocshArgInt};
-static const iocshArg configArg4 = {"priority", iocshArgInt};
-static const iocshArg configArg5 = {"stackSize", iocshArgInt};
+static const iocshArg configArg3 = {"# processing threads", iocshArgInt};
+static const iocshArg configArg4 = {"maxMemory", iocshArgInt};
+static const iocshArg configArg5 = {"priority", iocshArgInt};
+static const iocshArg configArg6 = {"stackSize", iocshArgInt};
 static const iocshArg * const configArgs[] = {&configArg0,
                                               &configArg1,
                                               &configArg2,
                                               &configArg3,
                                               &configArg4,
-                                              &configArg5};
-static const iocshFuncDef configADBitFlow = {"ADBitFlowConfig", 6, configArgs};
+                                              &configArg5,
+                                              &configArg6};
+static const iocshFuncDef configADBitFlow = {"ADBitFlowConfig", 7, configArgs};
 static void configCallFunc(const iocshArgBuf *args)
 {
-    ADBitFlowConfig(args[0].sval, args[1].ival, args[2].ival, 
-                      args[3].ival, args[4].ival, args[5].ival);
+    ADBitFlowConfig(args[0].sval, args[1].ival, args[2].ival, args[3].ival, 
+                    args[4].ival, args[5].ival, args[6].ival);
 }
 
 
