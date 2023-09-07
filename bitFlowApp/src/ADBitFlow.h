@@ -11,22 +11,14 @@
   #include "BFciLib.h"
 #endif
 
-#define SPConvertPixelFormatString          "SP_CONVERT_PIXEL_FORMAT"           // asynParamInt32, R/W
-#define SPStartedFrameCountString           "SP_STARTED_FRAME_COUNT"            // asynParamInt32, R/O
-#define SPDeliveredFrameCountString         "SP_DELIVERED_FRAME_COUNT"          // asynParamInt32, R/O
-#define SPReceivedFrameCountString          "SP_RECEIVED_FRAME_COUNT"           // asynParamInt32, R/O
-#define SPIncompleteFrameCountString        "SP_INCOMPLETE_FRAME_COUNT"         // asynParamInt32, R/O
-#define SPLostFrameCountString              "SP_LOST_FRAME_COUNT"               // asynParamInt32, R/O
-#define SPDroppedFrameCountString           "SP_DROPPED_FRAME_COUNT"            // asynParamInt32, R/O
-#define SPInputBufferCountString            "SP_INPUT_BUFFER_COUNT"             // asynParamInt32, R/O
-#define SPOutputBufferCountString           "SP_OUTPUT_BUFFER_COUNT"            // asynParamInt32, R/O
-#define SPReceivedPacketCountString         "SP_RECEIVED_PACKET_COUNT"          // asynParamInt32, R/O
-#define SPMissedPacketCountString           "SP_MISSED_PACKET_COUNT"            // asynParamInt32, R/O
-#define SPResendRequestedPacketCountString  "SP_RESEND_REQUESTED_PACKET_COUNT"  // asynParamInt32, R/O
-#define SPResendReceivedPacketCountString   "SP_RESEND_RECEIVED_PACKET_COUNT"   // asynParamInt32, R/O
-#define SPTimeStampModeString               "SP_TIME_STAMP_MODE"                // asynParamInt32, R/O
-#define SPUniqueIdModeString                "SP_UNIQUE_ID_MODE"                 // asynParamInt32, R/O
-
+#define BFTimeStampModeString               "BF_TIME_STAMP_MODE"                // asynParamInt32, R/O
+#define BFUniqueIdModeString                "BF_UNIQUE_ID_MODE"                 // asynParamInt32, R/O
+#define BFBufferSizeString                  "BF_BUFFER_SIZE"                    // asynParamInt32, R/O
+#define BFBufferQueueSizeString             "BF_BUFFER_QUEUE_SIZE"              // asynParamInt32, R/O
+#define BFMessageQueueSizeString            "BF_MESSAGE_QUEUE_SIZE"             // asynParamInt32, R/O
+#define BFMessageQueueFreeString            "BF_MESSAGE_QUEUE_FREE"             // asynParamInt32, R/O
+#define BFProcessTotalTimeString            "BF_PROCESS_TOTAL_TIME"             // asynParamFloat64, R/O
+#define BFProcessCopyTimeString             "BF_PROCESS_COPY_TIME"              // asynParamFloat64, R/O
 
 /** Main driver class inherited from areaDetectors ADDriver class.
  * One instance of this class will control one camera.
@@ -34,11 +26,11 @@
 class ADBitFlow : public ADGenICam
 {
 public:
-    ADBitFlow(const char *portName, int cameraId, int numSPBuffers,
-                size_t maxMemory, int priority, int stackSize);
+    ADBitFlow(const char *portName, int cameraId, int numSPBuffers, int numThreads,
+              size_t maxMemory, int priority, int stackSize);
 
     // virtual methods to override from ADGenICam
-    //virtual asynStatus writeInt32( asynUser *pasynUser, epicsInt32 value);
+    virtual asynStatus writeInt32( asynUser *pasynUser, epicsInt32 value);
     //virtual asynStatus writeFloat64( asynUser *pasynUser, epicsFloat64 value);
     virtual asynStatus readEnum(asynUser *pasynUser, char *strings[], int values[], int severities[], 
                                 size_t nElements, size_t *nIn);
@@ -49,27 +41,20 @@ public:
     
     BFGTLDev getBFGTLDev();
     /**< These should be private but are called from C callback functions, must be public. */
-    void imageGrabTask();
+    void waitImageThread();
+    void processImageThread();
     void shutdown();
 
 private:
-    int SPConvertPixelFormat;
-#define FIRST_SP_PARAM SPConvertPixelFormat
-    int SPStartedFrameCount;
-    int SPDeliveredFrameCount;
-    int SPReceivedFrameCount;
-    int SPIncompleteFrameCount;
-    int SPLostFrameCount;
-    int SPDroppedFrameCount;
-    int SPInputBufferCount;
-    int SPOutputBufferCount;
-    int SPReceivedPacketCount;
-    int SPMissedPacketCount;
-    int SPResendRequestedPacketCount;
-    int SPResendReceivedPacketCount;
-    int SPTimeStampMode;
-    int SPUniqueIdMode;
-    int SPFrameRateEnable;
+    int BFTimeStampMode;
+#define FIRST_BF_PARAM BFTimeStampMode
+    int BFUniqueIdMode;
+    int BFBufferSize;
+    int BFBufferQueueSize;
+    int BFMessageQueueSize;
+    int BFMessageQueueFree;
+    int BFProcessTotalTime;
+    int BFProcessCopyTime;
 
     /* Local methods to this class */
     asynStatus grabImage();
@@ -77,10 +62,11 @@ private:
     asynStatus stopCapture();
     asynStatus connectCamera();
     asynStatus disconnectCamera();
+    asynStatus setROI();
     void reportNode(FILE *fp, const char *nodeName, int level);
 
     /* Data */
-    int boardId_;
+    int boardNum_;
     #ifdef _WIN32
       Bd hBoard_;
       CircularInterface *pBoard_;
@@ -91,8 +77,8 @@ private:
     int numBFBuffers_;
     int exiting_;
     epicsEventId startEventId_;
-    epicsMessageQueue *pCallbackMsgQ_;
-    NDArray *pRaw_;
+    epicsMessageQueue *pMsgQ_;
+    int messageQueueSize_;
     int uniqueId_;
 };
 
