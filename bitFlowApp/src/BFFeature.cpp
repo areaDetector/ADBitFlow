@@ -132,67 +132,46 @@ void BFFeature::writeBoolean(bool bval) {
 // The Mikrotron cameras use integer node types for ExposureTime and AcquisitionFrameRate but ADGenICam expects these to be float nodes.
 // These double methods need to handle integers
 double BFFeature::readDouble() {
-    if (mNodeType == BFGTL_NODE_TYPE_FLOAT) {
-        double value;
-        size_t size = sizeof(value);
-        checkError(BFGTLNodeRead(mNode, BFGTL_NODE_VALUE, &value, &size), "readDouble", "BFGTLNodeRead");
-        return value;
-    } else if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
-        epicsInt64 value;
-        size_t size = sizeof(value);
-        checkError(BFGTLNodeRead(mNode, BFGTL_NODE_VALUE, &value, &size), "readDouble", "BFGTLNodeRead");
-        return (double)value;
-    } else { 
-        printf("BFFeature::readDouble node %s, error node type=%d\n", mNodeName.c_str(), mNodeType);
+    if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
+        return (double)readInteger();
     }
-    return 0;
+    if (mNodeType != BFGTL_NODE_TYPE_FLOAT) printf("BFFeature::readDouble warning node type=%d\n", mNodeType);
+    double value;
+    size_t size = sizeof(value);
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_VALUE, &value, &size), "readDouble", "BFGTLNodeRead");
+    return value;
 }
 
 void BFFeature::writeDouble(double value) { 
-    if (mNodeType == BFGTL_NODE_TYPE_FLOAT) {
-        size_t size = sizeof(value);
-        checkError(BFGTLNodeWrite(mNode, BFGTL_NODE_VALUE, &value, size), "writeDouble", "BFGTLNodeWrite");
-    } else if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
-        epicsInt64 ival = (epicsInt64)value;
-        size_t size = sizeof(ival);
-       checkError(BFGTLNodeWrite(mNode, BFGTL_NODE_VALUE, &ival, size), "writeDouble", "BFGTLNodeWrite");
-    } else { 
-        printf("BFFeature::writeDouble node %s, error node type=%d\n", mNodeName.c_str(), mNodeType);
+    if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
+        writeInteger((epicsInt64)value);
+        return;
     }
+    if (mNodeType != BFGTL_NODE_TYPE_FLOAT) printf("BFFeature::writeDouble warning node type=%d\n", mNodeType);
+    size_t size = sizeof(value);
+    checkError(BFGTLNodeWrite(mNode, BFGTL_NODE_VALUE, &value, size), "writeDouble", "BFGTLNodeWrite");
 }
 
 double BFFeature::readDoubleMin() {
-    if (mNodeType == BFGTL_NODE_TYPE_FLOAT) {
-        double value;
-        size_t size = sizeof(value);
-        checkError(BFGTLNodeRead(mNode, BFGTL_NODE_MIN, &value, &size), "readDoubleMin", "BFGTLNodeRead");
-        return value;
-    } else if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
-        epicsInt64 value;
-        size_t size = sizeof(value);
-        checkError(BFGTLNodeRead(mNode, BFGTL_NODE_MIN, &value, &size), "readDoubleMin", "BFGTLNodeRead");
-        return (double)value;
-    } else { 
-        printf("BFFeature::readDoubleMin node %s, error node type=%d\n", mNodeName.c_str(), mNodeType);
+    if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
+        return (double)readIntegerMin();
     }
-    return 0;
+    if (mNodeType != BFGTL_NODE_TYPE_FLOAT) printf("BFFeature::readDoubleMin warning node type=%d\n", mNodeType);
+    double value;    
+    size_t size = sizeof(value);
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_MIN, &value, &size), "readDoubleMin", "BFGTLNodeRead");
+    return value;
 }
 
 double BFFeature::readDoubleMax() {
-    if (mNodeType == BFGTL_NODE_TYPE_FLOAT) {
-        double value;
-        size_t size = sizeof(value);
-        checkError(BFGTLNodeRead(mNode, BFGTL_NODE_MAX, &value, &size), "readDoubleMax", "BFGTLNodeRead");
-        return value;
-    } else if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
-        epicsInt64 value;
-        size_t size = sizeof(value);
-        checkError(BFGTLNodeRead(mNode, BFGTL_NODE_MAX, &value, &size), "readDoubleMax", "BFGTLNodeRead");
-        return (double)value;
-    } else { 
-        printf("BFFeature::readDoubleMin node %s, error node type=%d\n", mNodeName.c_str(), mNodeType);
+    if (mNodeType == BFGTL_NODE_TYPE_INTEGER) {
+        return (double)readIntegerMax();
     }
-    return 0;
+    if (mNodeType != BFGTL_NODE_TYPE_FLOAT) printf("BFFeature::readDoubleMin warning node type=%d\n", mNodeType);
+    double value;
+    size_t size = sizeof(value);
+    checkError(BFGTLNodeRead(mNode, BFGTL_NODE_MAX, &value, &size), "readDoubleMax", "BFGTLNodeRead");
+    return value;
 }
 
 int BFFeature::readEnumIndex() { 
