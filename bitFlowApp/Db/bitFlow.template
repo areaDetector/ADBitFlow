@@ -77,7 +77,7 @@ record(ai, "$(P)$(R)ProcessTotalTime")
    field(PREC, "3")
 }
 
-record(ai11, "$(P)$(R)ProcessCopyTime")
+record(ai, "$(P)$(R)ProcessCopyTime")
 {
    field(DTYP, "asynFloat64")
    field(INP,  "@asyn($(PORT) 0)BF_PROCESS_COPY_TIME")
