@@ -5,6 +5,9 @@ include $(TOP)/configure/CONFIG
 
 STATIC_BUILD = NO
 
+USR_INCLUDES += -I$(BITFLOW_SDK_INCLUDE)
+USR_LDFLAGS_WIN32 += /LIBPATH:$(BITFLOW_SDK_LIB)
+
 #PROD_IOC_Linux += GenTLInterfaceExample
 #PROD_IOC_WIN32 += GenTLInterfaceExample
 #GenTLInterfaceExample_SRCS += GenTLInterfaceExample.cpp GenTLView.cpp
@@ -22,11 +25,11 @@ test_features_SRCS  += test_features.c
 #PROD_LIBS_Linux += GenApi_gcc48_v3_3
 PROD_LIBS_Linux += BFSOciLib.9.08
 
-PROD_LIBS_WIN32 += BFGTLUtil
-PROD_LIBS_WIN32 += BFEr
-PROD_LIBS_WIN32 += BFD
-PROD_LIBS_WIN32 += DispSurf
-PROD_LIBS_WIN32 += Cid
+PROD_SYS_LIBS_WIN32 += BFGTLUtil
+PROD_SYS_LIBS_WIN32 += BFEr
+PROD_SYS_LIBS_WIN32 += BFD
+PROD_SYS_LIBS_WIN32 += DispSurf
+PROD_SYS_LIBS_WIN32 += Cid
 PROD_SYS_LIBS_WIN32 += User32
 
 #=============================
