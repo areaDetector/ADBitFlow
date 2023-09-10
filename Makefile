@@ -3,8 +3,6 @@ TOP = .
 include $(TOP)/configure/CONFIG
 DIRS := $(DIRS) configure
 DIRS := $(DIRS) bitFlowApp
-DIRS := $(DIRS) bitFlowSupport
-bitFlowApp_DEPEND_DIRS += bitFlowSupport
 ifeq ($(BUILD_IOCS), YES)
 DIRS := $(DIRS) $(filter-out $(DIRS), $(wildcard iocs))
 iocs_DEPEND_DIRS += bitFlowApp
