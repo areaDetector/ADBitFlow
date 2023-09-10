@@ -22,14 +22,13 @@ epicsEnvSet("EPICS_DB_INCLUDE_PATH", "$(ADCORE)/db;$(ADGENICAM)/db;$(ADBITFLOW)/
 # Define NELEMENTS to be enough for a 1920x1080 (mono) image
 epicsEnvSet("NELEMENTS", "2073600")
 
-# ADBitFlowConfig(const char *portName, const char *boardId, int numBFBuffers,
+# ADBitFlowConfig(const char *portName, const char *boardId, int numBFBuffers, int numThreads,
 #                 size_t maxMemory, int priority, int stackSize)
-ADBitFlowConfig("$(PORT)", $(BOARD_ID), 200)
-asynSetTraceIOMask($(PORT), 0, 2)
+ADBitFlowConfig("$(PORT)", $(BOARD_ID), 2000, 2)
+asynSetTraceIOMask($(PORT), 0, ESCAPE)
 # Set ASYN_TRACE_WARNING and ASYN_TRACE_ERROR
-#asynSetTraceMask($(PORT), 0, 0xff)
+#asynSetTraceMask($(PORT), 0, ERROR|WARNING)
 #asynSetTraceFile($(PORT), 0, "asynTrace.out")
-#asynSetTraceInfoMask($(PORT), 0, 0xf)
 
 # Main database.  This just loads and modifies ADBase.template
 dbLoadRecords("$(ADBITFLOW)/db/bitFlow.template", "P=$(PREFIX),R=cam1:,PORT=$(PORT)")
