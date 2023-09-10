@@ -7,6 +7,8 @@ include $(TOP)/configure/CONFIG
 
 DBD += ADBitFlowSupport.dbd
 
+USR_INCLUDES += -I$(BITFLOW_SDK_INCLUDE)
+
 LIBRARY_IOC_Linux += ADBitFlow
 LIBRARY_IOC_WIN32 += ADBitFlow
 LIB_SRCS += BFFeature.cpp
