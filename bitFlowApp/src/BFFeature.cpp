@@ -115,7 +115,7 @@ void BFFeature::writeInteger(epicsInt64 value) {
 }
 
 bool BFFeature::readBoolean() { 
-    BFBOOL value;
+    BFGTLUtilBool value;
     size_t size = sizeof(value);
     if (mNodeType != BFGTL_NODE_TYPE_BOOLEAN) printf("BFFeature::readBoolean warning node type=%d\n", mNodeType);
     checkError(BFGTLNodeRead(mNode, BFGTL_NODE_VALUE, &value, &size), "readBoolean", "BFGTLNodeRead");
@@ -123,7 +123,7 @@ bool BFFeature::readBoolean() {
 }
 
 void BFFeature::writeBoolean(bool bval) {
-    BFBOOL value = bval;
+    BFGTLUtilBool value = bval;
     size_t size = sizeof(value);
     if (mNodeType != BFGTL_NODE_TYPE_BOOLEAN) printf("BFFeature::writeBoolean warning node type=%d\n", mNodeType);
     checkError(BFGTLNodeWrite(mNode, BFGTL_NODE_VALUE, &value, size), "writeBoolean", "BFGTLNodeWrite");
@@ -215,8 +215,6 @@ void BFFeature::writeString(std::string const & value) {
 }
 
 void BFFeature::writeCommand() {
-    epicsInt64 value = 1; 
-    size_t size = sizeof(value);
     if (mNodeType != BFGTL_NODE_TYPE_COMMAND) printf("BFFeature::writeCommand warning node type=%d\n", mNodeType);
     checkError(BFGTLNodeWrite(mNode, BFGTL_NODE_VALUE, 0, 0), "writeCommand", "BFGTLNodeWrite");
 }
