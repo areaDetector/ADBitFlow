@@ -34,13 +34,13 @@
 #include "BFErApi.h"
 #include "DSApi.h"
 #include "BFGTLUtilApi.h"
+using namespace BufferAcquisition;
 
 #else
 #include "BFciLib.h"
 #endif
 
 using namespace std;
-using namespace BufferAcquisition;
 
 #include <ADGenICam.h>
 
@@ -85,7 +85,12 @@ extern "C" int ADBitFlowConfig(const char *portName, int boardNum, int numBFBuff
 }
 
 struct workerQueueElement {
-    BiCirHandle cirHandle;
+    #ifdef _WIN32
+      BiCirHandle cirHandle;
+    #else
+      tCIU32 frameID;
+      tCIU8 *pFrame;
+    #endif
     int uniqueId;
 };
 
@@ -123,7 +128,7 @@ static void processImageThreadC(void *drvPvt)
 ADBitFlow::ADBitFlow(const char *portName, int boardNum, int numBFBuffers, int numThreads,
                          size_t maxMemory, int priority, int stackSize )
     : ADGenICam(portName, maxMemory, priority, stackSize),
-    boardNum_(boardNum), pBoard_(0), hBoard_(0), hDevice_(0), numBFBuffers_(numBFBuffers), exiting_(0), uniqueId_(0)
+    boardNum_(boardNum), hBoard_(0), pBoard_(0), hDevice_(0), numBFBuffers_(numBFBuffers), exiting_(0), uniqueId_(0)
 {
     static const char *functionName = "ADBitFlow";
     asynStatus status;
@@ -203,10 +208,16 @@ BFGTLDev ADBitFlow::getBFGTLDev() {
 
 void ADBitFlow::shutdown(void)
 {
-    static const char *functionName = "shutdown";
+    //static const char *functionName = "shutdown";
     
     lock();
     exiting_ = 1;
+    stopCapture();
+    #ifdef _WIN32
+      delete pBoard_;
+    #else
+      CiVFGclose(hBoard_);
+    #endif
     unlock();
 }
 
@@ -271,12 +282,16 @@ asynStatus ADBitFlow::connectCamera(void)
 
 #else
     tCIRC circ;
-    if (circ = CiVFGopen(0, kCIBO_writeAccess, &hBoard_)) {
+    if ((circ = CiVFGopen(0, kCIBO_writeAccess, &hBoard_))) {
         asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
             "%s::%s error calling CiVFGopen, error=%s.\n",
             driverName, functionName, CiErrStr(circ));
         return asynError;
     }
+    tCIU32 libVers, drvVers;
+    CiSysGetVersions(&libVers, &drvVers);
+    epicsSnprintf(SDKVersionString, sizeof(SDKVersionString), "%d.%d", libVers, drvVers);
+    
 #endif
     epicsSnprintf(driverVersionString, sizeof(driverVersionString), "%d.%d.%d", 
                   DRIVER_VERSION, DRIVER_REVISION, DRIVER_MODIFICATION);
@@ -294,9 +309,7 @@ asynStatus ADBitFlow::connectCamera(void)
 
 void ADBitFlow::waitImageThread()
 {
-    asynStatus status = asynSuccess;
-    BFU32 stat;
-    BiCirHandle cirHandle;
+    int BFStatus, BFStatus1;
     int numImages;
     int imageMode;
     int imagesCollected;
@@ -336,17 +349,19 @@ void ADBitFlow::waitImageThread()
         callParamCallbacks();
 
         asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s waiting for frame\n", driverName, functionName);
+#ifdef _WIN32
+        BiCirHandle cirHandle;
         unlock();
-        int BFStatus = pBoard_->waitDoneFrame(INFINITE, &cirHandle);
-        lock();
-        asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s got frame status=%d BufferNumber=%d\n", 
+        BFStatus = pBoard_->waitDoneFrame(INFINITE, &cirHandle);
+        asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s got frame status=%d, bufferNumber=%d\n", 
                   driverName, functionName, BFStatus, cirHandle.BufferNumber);
+        lock();
         switch (BFStatus) {
           case BI_OK: {
               // Mark the buffer to hold
               asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s calling setBufferStatus for BIHOLD\n", driverName, functionName);
-              stat = pBoard_->setBufferStatus(cirHandle, BIHOLD);
-              asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s setBufferStatus returned %d\n", driverName, functionName, stat);
+              BFStatus1 = pBoard_->setBufferStatus(cirHandle, BIHOLD);
+              asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s setBufferStatus returned %d\n", driverName, functionName, BFStatus1);
               // Send a message to the processing thread
               struct workerQueueElement wqe{cirHandle, uniqueId_};
               uniqueId_++;
@@ -372,7 +387,6 @@ void ADBitFlow::waitImageThread()
                        "%s::%s Circular acquisition aborted\n",
                        driverName, functionName);
              setIntegerParam(ADStatus, ADStatusIdle);
-printf("Set idle and calling stopCapture()\n");
              stopCapture();
              waitingForImages = false;
              break;
@@ -397,30 +411,72 @@ printf("Set idle and calling stopCapture()\n");
                        driverName, functionName, BFStatus);
              break;
         }
+#else
+        tCIU32 frameID;
+        tCIU8 *pFrame;
+        BFStatus = CiGetOldestNotDeliveredFrame(hBoard_, &frameID, &pFrame);
+        switch (BFStatus) {
+          case kCIEnoErr: {
+              // Mark the buffer to hold
+              //stat = pBoard_->setBufferStatus(cirHandle, BIHOLD);
+              // Send a message to the processing thread
+              struct workerQueueElement wqe{frameID, pFrame, uniqueId_};
+              uniqueId_++;
+              asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s sending message\n", driverName, functionName);
+              if (pMsgQ_->send(&wqe, sizeof(wqe)) != 0) {
+                  asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s error calling pMsgQ_->send()\n", driverName, functionName);
+              }
+              imagesCollected++;
+              if ((imageMode == ADImageSingle) || ((imageMode == ADImageMultiple) && (imagesCollected >= numImages))) {
+                  CiAqAbort(hBoard_);
+                  waitingForImages = false;
+              }
+            }
+            break;
+          case kCIEnoNewData:
+            BFStatus1 = CiWaitNextUndeliveredFrame(hBoard_, -1);
+            if (BFStatus1 == kCIEnoErr) break;
+            if (BFStatus1 != kCIEaqAbortedErr) {
+              asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                        "%s::%s Unknown status return from CiGetNextUndeliveredFrame = %d\n",
+                        driverName, functionName, BFStatus1);
+              break;
+            }
+            // Fall through if aborted
+          case kCIEaqAbortedErr:
+             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                       "%s::%s Circular acquisition aborted\n",
+                       driverName, functionName);
+             setIntegerParam(ADStatus, ADStatusIdle);
+             stopCapture();
+             waitingForImages = false;
+             break;
+          default:
+             asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                       "%s::%s Unknown status return from CiGetOldestNotDeliveredFrame = %d\n",
+                       driverName, functionName, BFStatus);
+             break;
+        }
+#endif
     }
 }
 
 void ADBitFlow::processImageThread()
 {
-    asynStatus status = asynSuccess;
-    NDArray *pRaw;
+    NDArray *pRaw = 0;
     size_t nRows, nCols;
     NDDataType_t dataType = NDUInt8;
     NDColorMode_t colorMode = NDColorModeMono;
     int timeStampMode;
     int uniqueIdMode;
-    int convertPixelFormat;
-    bool imageConverted = false;
     int numColors=1;
     size_t dims[3];
     int pixelSize;
     size_t dataSize;
-    BFU32 frameSize;
+    unsigned int frameSize;
     void *pData;
     int nDims;
-    int acquire;
     int numImages;
-    BiCirHandle cirHandle;
     int imageCounter;
     int numImagesCounter;
     int imageMode;
@@ -444,7 +500,10 @@ void ADBitFlow::processImageThread()
         //getIntegerParam(ADAcquire, &acquire);
         //if (!acquire) continue;
 
+#ifdef _WIN32
+        BiCirHandle cirHandle;
         cirHandle = wqe.cirHandle;
+        pData = cirHandle.pBufData;
         
         // Get the image information
         nCols = pBoard_->getBrdInfo(BiCamInqXSize);
@@ -454,6 +513,16 @@ void ADBitFlow::processImageThread()
         asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, 
                   "%s::%s nCols=%u, nRows=%u, pixelSize=%u, frameSize=%u, BufferNumber=%u, FrameCount=%u, NumItemsOnQueue=%u\n",
                   driverName, functionName, nCols, nRows, pixelSize, frameSize, cirHandle.BufferNumber, cirHandle.FrameCount, cirHandle.NumItemsOnQueue);
+#else
+        int iTemp;
+        getIntegerParam(ADSizeX, &iTemp);
+        nCols = iTemp;
+        getIntegerParam(ADSizeY, &iTemp);
+        nRows = iTemp;
+        pixelSize = bitsPerPixel_/8;
+        frameSize = nCols * nRows * pixelSize;
+        pData = wqe.pFrame;
+#endif
 
         if (numColors == 1) {
             nDims = 2;
@@ -482,7 +551,6 @@ void ADBitFlow::processImageThread()
         setIntegerParam(NDColorMode, colorMode);
         getIntegerParam(NDArrayCallbacks, &arrayCallbacks);
         if (arrayCallbacks) {
-    
             asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s allocating pRaw\n", driverName, functionName);
             pRaw = pNDArrayPool->alloc(nDims, dims, dataType, 0, NULL);
             if (!pRaw) {
@@ -496,7 +564,6 @@ void ADBitFlow::processImageThread()
                 setIntegerParam(ADAcquire, 0);
                 continue;
             }
-            pData = cirHandle.pBufData;
             if (pData) {
                 asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s copying data\n", driverName, functionName);
                 unlock();
@@ -514,7 +581,11 @@ void ADBitFlow::processImageThread()
             // Put the frame number into the buffer
             getIntegerParam(BFUniqueIdMode, &uniqueIdMode);
             if (uniqueIdMode == UniqueIdCamera) {
+#ifdef _WIN32
                 pRaw->uniqueId = cirHandle.FrameCount;
+#else
+                pRaw->uniqueId = wqe.frameID;
+#endif         
             } else {
                 pRaw->uniqueId = wqe.uniqueId;
             }
@@ -522,11 +593,18 @@ void ADBitFlow::processImageThread()
             getIntegerParam(BFTimeStampMode, &timeStampMode);
             // Set the timestamps in the buffer
             if (timeStampMode == TimeStampCamera) {
+#ifdef _WIN32
                 // Should use cirHandle.HiResTimeStamp but its fields are all zero?
                 pRaw->timeStamp = cirHandle.TimeStamp.hour*3600 + 
                                   cirHandle.TimeStamp.min*60 + 
                                   cirHandle.TimeStamp.sec +
                                   cirHandle.TimeStamp.msec/1000.;
+#else
+                tCIextraFrameInfo extraInfo;
+                extraInfo.frameID = wqe.frameID;
+                CiGetExtraFrameInfo(hBoard_, sizeof(extraInfo), &extraInfo);
+                pRaw->timeStamp = extraInfo.timestamp;
+#endif
             } else {
                 pRaw->timeStamp = pRaw->epicsTS.secPastEpoch + pRaw->epicsTS.nsec/1e9;
             }
@@ -542,7 +620,13 @@ void ADBitFlow::processImageThread()
 
         // Mark the buffer as available
         asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s marking buffer as available\n", driverName, functionName);
+#ifdef _WIN32
         pBoard_->setBufferStatus(cirHandle, BIAVAILABLE);
+#else
+        unsigned int bufferID;
+        CiGetBufferID(hBoard_, wqe.frameID, &bufferID);
+        CiReleaseBuffer(hBoard_, bufferID);
+#endif
         getIntegerParam(NDArrayCounter, &imageCounter);
         getIntegerParam(ADNumImages, &numImages);
         getIntegerParam(ADNumImagesCounter, &numImagesCounter);
@@ -560,7 +644,7 @@ void ADBitFlow::processImageThread()
             // Release the NDArray buffer now that we are done with it.
             // After the callback just above we don't need it anymore
             //asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s releasing pRaw\n", driverName, functionName);
-            pRaw->release();
+            if (pRaw) pRaw->release();
             pRaw = NULL;
         }
 
@@ -569,13 +653,17 @@ void ADBitFlow::processImageThread()
             ((imageMode == ADImageMultiple) && (numImagesCounter >= numImages))) {
             setIntegerParam(ADStatus, ADStatusIdle);
             asynPrint(pasynUserSelf, ASYN_TRACE_WARNING, "%s::%s calling stopCapture\n", driverName, functionName);
-            status = stopCapture();
+            stopCapture();
         }
         t4 = epicsTime::getCurrent();
         setDoubleParam(BFProcessTotalTime, (t4-t1)*1000.);
         setDoubleParam(BFProcessCopyTime, (t3-t2)*1000.);
         setIntegerParam(BFMessageQueueFree, messageQueueSize_ - pMsgQ_->pending());
+#ifdef _WIN32
         setIntegerParam(BFBufferQueueSize, cirHandle.NumItemsOnQueue);
+#else
+        // Is this information available in Linux?
+#endif
         callParamCallbacks();
     }
 }
@@ -583,47 +671,35 @@ void ADBitFlow::processImageThread()
 asynStatus ADBitFlow::writeInt32(asynUser *pasynUser, epicsInt32 value)
 {
     int function = pasynUser->reason;
-    int status;
     int addr;
-    //static const char *functionName = "writeInt32";
+    static const char *functionName = "writeInt32";
   
+    printf("%s::%s function=%d, value=%d\n", driverName, functionName, function, value);
     this->getAddress(pasynUser, &addr);
-    setIntegerParam(addr, function, value);
     if ((function == ADSizeX) ||
         (function == ADSizeY) ||
         (function == ADMinX)  ||
         (function == ADMinY)) {
-        //return this->setROI();
+
+        setIntegerParam(addr, function, value);
+        return this->setROI();
     }
     return ADGenICam::writeInt32(pasynUser, value);
 }
 
-asynStatus ADBitFlow::readEnum(asynUser *pasynUser, char *strings[], int values[], int severities[], 
-                               size_t nElements, size_t *nIn)
-{
-    int function = pasynUser->reason;
-    //static const char *functionName = "readEnum";
-
-/*
-    // There are a few enums we don't want to autogenerate the values
-    if (function == SPConvertPixelFormat) {
-        return asynError;
-    }
-*/    
-    return ADGenICam::readEnum(pasynUser, strings, values, severities, nElements, nIn);
-}
-
 asynStatus ADBitFlow::setROI() 
 {
-    static const char *functionName = "writeInt32";
-
     int minX, minY, sizeX, sizeY;
+    static const char *functionName = "setROI";
+
     getIntegerParam(ADMinX, &minX);
     getIntegerParam(ADMinY, &minY);
     getIntegerParam(ADSizeX, &sizeX);
     getIntegerParam(ADSizeY, &sizeY);
+#ifdef _WIN32
     try {
         printf("%s::%s calling setAcqROI(%d, %d, %d, %d)\n", driverName, functionName, minX, minY, sizeX, sizeY);
+        pBoard_->clearBuffers();
         pBoard_->setAcqROI(minX, minY, sizeX, sizeY);
     }
     catch (BFException e) {
@@ -631,6 +707,28 @@ asynStatus ADBitFlow::setROI()
                   driverName, functionName, e.showErrorMsg());
         return asynError;
     }
+#else
+    int BFStatus;
+    BFStatus = CiDrvrBuffConfigure(hBoard_, 0, minX, sizeX, minY, sizeY);
+    BFStatus = CiDrvrBuffConfigure(hBoard_, numBFBuffers_, minX, sizeX, minY, sizeY);
+    if (BFStatus) {
+        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s error calling CiDrvrBuffConfigure error=%d\n",
+                  driverName, functionName, BFStatus);
+        return asynError;
+    }
+    tCIU32	nFrames, bitsPerPix, hROIoffset, hROIsize, vROIoffset, vROIsize, stride;
+    BFStatus = CiBufferInterrogate(hBoard_, &nFrames, &bitsPerPix, &hROIoffset, &hROIsize, &vROIoffset, &vROIsize, &stride);
+    if (BFStatus) {
+        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s error calling CiBufferInterrogate error=%d\n",
+                  driverName, functionName, BFStatus);
+        return asynError;
+    }
+    setIntegerParam(ADMinX, hROIoffset);
+    setIntegerParam(ADMinY, vROIoffset);
+    setIntegerParam(ADSizeX, hROIsize);    
+    setIntegerParam(ADSizeY, vROIsize);
+    bitsPerPixel_ = bitsPerPix;
+#endif
     return asynSuccess;
 }
 
@@ -642,19 +740,25 @@ asynStatus ADBitFlow::startCapture()
     
     GenICamFeature *acquisitionStart = mGCFeatureSet.getByName("AcquisitionStart");
     acquisitionStart->writeCommand();
+#ifdef _WIN32
     pBoard_->cirControl(BISTART, BiAsync);
+#else
+    CiAqStart(hBoard_, -1);
+#endif
     epicsEventSignal(startEventId_);
     return asynSuccess;
 }
 
 asynStatus ADBitFlow::stopCapture()
 {
-    int status;
     static const char *functionName = "stopCapture";
 
     asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
-
+#ifdef _WIN32
     pBoard_->cirControl(BISTOP, BiAsync);
+#else
+    CiAqStop(hBoard_);
+#endif
     epicsThreadSleep(1.0);
     GenICamFeature *acquisitionStop = mGCFeatureSet.getByName("AcquisitionStop");
     acquisitionStop->writeCommand();
@@ -666,55 +770,6 @@ asynStatus ADBitFlow::stopCapture()
     return asynSuccess;
 }
 
-/*
-void ADBitFlow::reportNode(FILE *fp, INodeMap *pNodeMap, gcstring nodeName, int level)
-{
-    gcstring displayName;
-    gcstring value;
-    CNodePtr pBase = (CNodePtr)pNodeMap->GetNode(nodeName);
-    if (IsAvailable(pBase) && IsReadable(pBase)) {
-        displayName = pBase->GetDisplayName();
-        switch (pBase->GetPrincipalInterfaceType()) {
-            case intfIString: {
-                CStringPtr pNode = static_cast<CStringPtr>(pBase);
-                value = pNode->GetValue();
-                break;
-            }
-            case intfIInteger: {
-                CIntegerPtr pNode = static_cast<CIntegerPtr>(pBase);
-                value = pNode->ToString();
-                break;
-            }
-            case intfIFloat: {
-                CFloatPtr pNode = static_cast<CFloatPtr>(pBase);
-                value = pNode->ToString();
-                break;
-                }
-            case intfIBoolean: {
-                CBooleanPtr pNode = static_cast<CBooleanPtr>(pBase);
-                value = pNode->ToString();
-                break;
-                }
-            case intfICommand: {
-                CCommandPtr pNode = static_cast<CCommandPtr>(pBase);
-                value = pNode->GetToolTip();
-                break;
-                }
-            case intfIEnumeration: {
-                CEnumerationPtr pNode = static_cast<CEnumerationPtr>(pBase);
-                CEnumEntryPtr pEntry = pNode->GetCurrentEntry();
-                value = pEntry->GetSymbolic();
-                break;
-               }
-            default:
-                value = "Unhandled data type";
-                break;
-        }
-    }
-    fprintf(fp, "%s (%s):%s\n", displayName.c_str(), nodeName.c_str(), value.c_str());
-}
-*/
-
 /** Print out a report; calls ADGenICam::report to get base class report as well.
   * \param[in] fp File pointer to write output to
   * \param[in] details Level of detail desired.  If >1 prints information about 
@@ -723,35 +778,8 @@ void ADBitFlow::reportNode(FILE *fp, INodeMap *pNodeMap, gcstring nodeName, int 
 
 void ADBitFlow::report(FILE *fp, int details)
 {
-    int numCameras;
-    int i;
-    static const char *functionName = "report";
+    //static const char *functionName = "report";
 
-/*
-    try {    
-        numCameras = camList_.GetSize();
-        fprintf(fp, "\n");
-        fprintf(fp, "Number of cameras detected: %d\n", numCameras);
-        if (details <1) return;
-        for (i=0; i<numCameras; i++) {
-            CameraPtr pCamera;
-            pCamera = camList_.GetByIndex(i);
-            INodeMap *pNodeMap = &pCamera->GetTLDeviceNodeMap();
-    
-            fprintf(fp, "Camera %d\n", i);
-            reportNode(fp, pNodeMap, "DeviceVendorName", 1);
-            reportNode(fp, pNodeMap, "DeviceModelName", 1);
-            reportNode(fp, pNodeMap, "DeviceSerialNumber", 1);
-            reportNode(fp, pNodeMap, "DeviceVersion", 1);
-            reportNode(fp, pNodeMap, "DeviceType", 1);
-        }
-    }
-    catch (Spinnaker::Exception &e) {
-      asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, 
-          "%s::%s exception %s\n",
-          driverName, functionName, e.what());
-    }
-*/    
     fprintf(fp, "\n");
     fprintf(fp, "Report for camera in use:\n");
     ADGenICam::report(fp, details);
