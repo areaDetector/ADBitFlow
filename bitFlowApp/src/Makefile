@@ -8,6 +8,7 @@ include $(TOP)/configure/CONFIG
 DBD += ADBitFlowSupport.dbd
 
 USR_INCLUDES += -I$(BITFLOW_SDK_INCLUDE)
+USR_INCLUDES_Linux += -I$(BITFLOW_UTILS_INCLUDE)/BFGTLUtil
 
 LIBRARY_IOC_Linux += ADBitFlow
 LIBRARY_IOC_WIN32 += ADBitFlow
