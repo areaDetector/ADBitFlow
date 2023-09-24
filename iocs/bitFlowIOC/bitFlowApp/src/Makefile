@@ -21,6 +21,8 @@ PROD_LIBS += ADBitFlow
 PROD_LIBS += ADGenICam
 
 PROD_SYS_LIBS_Linux += BFSOciLib.9.08
+PROD_LIBS_Linux += BFGTLUtil
+BFGTLUtil_DIR = /usr/local/lib/BitFlow
 
 PROD_SYS_LIBS_WIN32 += BFGTLUtil
 PROD_SYS_LIBS_WIN32 += BFEr
