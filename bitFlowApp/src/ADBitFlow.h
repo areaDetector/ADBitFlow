@@ -32,8 +32,6 @@ public:
     // virtual methods to override from ADGenICam
     virtual asynStatus writeInt32( asynUser *pasynUser, epicsInt32 value);
     //virtual asynStatus writeFloat64( asynUser *pasynUser, epicsFloat64 value);
-    virtual asynStatus readEnum(asynUser *pasynUser, char *strings[], int values[], int severities[], 
-                                size_t nElements, size_t *nIn);
     void report(FILE *fp, int details);
     virtual GenICamFeature *createFeature(GenICamFeatureSet *set, 
                                           std::string const & asynName, asynParamType asynType, int asynIndex,
@@ -72,9 +70,11 @@ private:
       CircularInterface *pBoard_;
     #else
       tCIp hBoard_;
+      int *pBoard_;  // Unused
     #endif
     BFGTLDev hDevice_;
     int numBFBuffers_;
+    int bitsPerPixel_;
     int exiting_;
     epicsEventId startEventId_;
     epicsMessageQueue *pMsgQ_;
