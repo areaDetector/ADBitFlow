@@ -279,6 +279,9 @@ asynStatus ADBitFlow::connectCamera(void)
     unsigned int versionMajor, versionMinor;
     BiDVersion(&versionMajor, &versionMinor);
     epicsSnprintf(SDKVersionString, sizeof(SDKVersionString), "%d.%d", versionMajor, versionMinor);
+    
+    // Set timeout to 10 seconds
+    pBoard_->setTimeout(10000);
 
 #else
     tCIRC circ;
@@ -371,7 +374,7 @@ void ADBitFlow::waitImageThread()
               }
               imagesCollected++;
               if ((imageMode == ADImageSingle) || ((imageMode == ADImageMultiple) && (imagesCollected >= numImages))) {
-                  pBoard_->cirControl(BISTOP, BiAsync);
+                  pBoard_->cirControl(BIABORT, BiAsync);
                   waitingForImages = false;
               }
             }
@@ -674,7 +677,6 @@ asynStatus ADBitFlow::writeInt32(asynUser *pasynUser, epicsInt32 value)
     int addr;
     static const char *functionName = "writeInt32";
   
-    printf("%s::%s function=%d, value=%d\n", driverName, functionName, function, value);
     this->getAddress(pasynUser, &addr);
     if ((function == ADSizeX) ||
         (function == ADSizeY) ||
@@ -698,9 +700,11 @@ asynStatus ADBitFlow::setROI()
     getIntegerParam(ADSizeY, &sizeY);
 #ifdef _WIN32
     try {
-        printf("%s::%s calling setAcqROI(%d, %d, %d, %d)\n", driverName, functionName, minX, minY, sizeX, sizeY);
-        pBoard_->clearBuffers();
+        BFU32 cirSetupOptions = 0;
+        BFU32 errorMode = CirErStop;
+        pBoard_->cleanup();
         pBoard_->setAcqROI(minX, minY, sizeX, sizeY);
+        pBoard_->setup(numBFBuffers_, errorMode, cirSetupOptions);
     }
     catch (BFException e) {
         asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s error calling setAcqROI error=%s\n",
@@ -755,7 +759,7 @@ asynStatus ADBitFlow::stopCapture()
 
     asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s::%s entry\n", driverName, functionName);
 #ifdef _WIN32
-    pBoard_->cirControl(BISTOP, BiAsync);
+    pBoard_->cirControl(BIABORT, BiAsync);
 #else
     CiAqStop(hBoard_);
 #endif
